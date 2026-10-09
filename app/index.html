@@ -163,7 +163,7 @@ body.modo-rojo #rojo{display:block}
 const ESTILO = {
   0:{n:"Sin dato",          c:[0,0,0,0]},
   1:{n:"Despejado",         c:[0,0,0,0]},
-  2:{n:"Probablemente despejado", c:[227,184,92,70]},
+  2:{n:"Probablemente despejado", c:[227,184,92,38]},
   3:{n:"Nube baja",         c:[150,158,176,190]},
   4:{n:"Nube media",        c:[214,219,230,205]},
   5:{n:"Nube alta (cirro, yunque)", c:[150,200,255,190]},
@@ -185,10 +185,13 @@ if (leer("cielo.rojo", false)) document.body.classList.add("modo-rojo");
 /* ── mapa ── */
 const mapa = L.map("mapa", {zoomControl:true, worldCopyJump:false, minZoom:3})
   .setView(leer("cielo.vista", [-41.3, -72.9, 7]).slice(0,2), leer("cielo.vista", [-41.3,-72.9,7])[2]);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-  subdomains:"abcd", maxZoom:13,
-  attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · © <a href="https://carto.com/">CARTO</a> · GOES-19 NOAA'
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+L.tileLayer(ESRI + "World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+  maxNativeZoom:16, maxZoom:13,
+  attribution:'Mapa © Esri, HERE, Garmin, © OpenStreetMap · Nubes: GOES-19 NOAA'
 }).addTo(mapa);
+mapa.createPane("etiquetas"); mapa.getPane("etiquetas").style.zIndex = 450; mapa.getPane("etiquetas").style.pointerEvents = "none";
+L.tileLayer(ESRI + "World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {maxNativeZoom:16, maxZoom:13, pane:"etiquetas"}).addTo(mapa);
 mapa.on("moveend", () => { const c = mapa.getCenter(); guardar("cielo.vista", [c.lat, c.lng, mapa.getZoom()]); });
 
 const CapaNubes = L.GridLayer.extend({
