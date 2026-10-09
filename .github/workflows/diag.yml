@@ -1,5 +1,5 @@
 name: Diagnóstico
-# Copia el latest.json publicado a la rama diag-out para poder inspeccionarlo (se lanza a mano).
+# Copia los datos publicados (latest.json y cuadros) a la rama diag-out para inspeccionarlos (se lanza a mano).
 on: workflow_dispatch
 permissions:
   contents: write
@@ -8,11 +8,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: curl -fsS "https://juansunsun.github.io/cielo/data/latest.json" -o diag.json
+      - run: |
+          B="https://juansunsun.github.io/cielo/data"
+          mkdir -p diag/f
+          curl -fsS "$B/latest.json" -o diag/latest.json
+          for f in $(jq -r '.cuadros[].f' diag/latest.json); do curl -fsS "$B/$f" -o "diag/$f"; done
+          ls -la diag/f | head -30
       - run: |
           git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
           git checkout --orphan diag-out
           git rm -rfq --cached .
-          git add -f diag.json
+          git add -f diag
           git commit -qm "diag"
           git push -f origin diag-out
