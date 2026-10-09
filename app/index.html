@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cielo</title>
+<meta name="description" content="Estado del cielo en cualquier punto de Chile y la Patagonia a partir de GOES-19, con corrección de paralaje.">
+<meta name="theme-color" content="#121a2c">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icono-192.png">
+<link rel="apple-touch-icon" href="icono-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cielo">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{
+  --noche:#121a2c;      /* fondo: cielo nocturno */
+  --panel:#18213a;
+  --borde:#2a3556;
+  --texto:#dce3f2;      /* luz de estrella */
+  --tenue:#8d98b8;
+  --despejado:#7fd1ae;
+  --parcial:#e3b85c;
+  --nublado:#c9ccd6;    /* las nubes son grises, no rojas */
+  --niebla:#a88bd6;
+  --foco:#9cc7ff;
+  --ancho-panel:390px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--noche);color:var(--texto);
+  font:16px/1.5 "Atkinson Hyperlegible",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--foco);outline-offset:2px}
+.num{font-variant-numeric:tabular-nums}
+
+#app{position:fixed;inset:0;display:grid;grid-template-columns:1fr var(--ancho-panel)}
+#mapa{position:relative;background:#0d1322}
+.leaflet-container{background:#0d1322;font:inherit}
+.leaflet-control-attribution{background:rgba(18,26,44,.75)!important;color:var(--tenue)!important;font-size:11px}
+.leaflet-control-attribution a{color:var(--tenue)!important}
+.leaflet-bar a{background:var(--panel)!important;color:var(--texto)!important;border-color:var(--borde)!important}
+
+/* barra superior sobre el mapa */
+#cabecera{position:absolute;z-index:500;top:calc(10px + env(safe-area-inset-top));left:56px;right:10px;
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap;pointer-events:none}
+#cabecera>*{pointer-events:auto}
+.marca{font-weight:700;font-size:20px;letter-spacing:.01em;padding:4px 12px;border-radius:999px;
+  background:rgba(18,26,44,.82);border:1px solid var(--borde)}
+.chip{padding:5px 11px;border-radius:999px;background:rgba(18,26,44,.82);border:1px solid var(--borde);
+  font-size:14px;color:var(--tenue)}
+.chip.aviso{color:var(--parcial);border-color:#5a4a26}
+.boton{cursor:pointer;padding:6px 12px;border-radius:999px;background:rgba(24,33,58,.92);
+  border:1px solid var(--borde);font-size:14px}
+.boton:hover{border-color:var(--foco)}
+.boton[aria-pressed="true"]{background:#2a3a66;border-color:var(--foco)}
+
+/* línea de tiempo */
+#tiempo{position:absolute;z-index:500;left:10px;right:10px;bottom:calc(14px + env(safe-area-inset-bottom));
+  display:flex;gap:10px;align-items:center;padding:8px 12px;border-radius:14px;
+  background:rgba(18,26,44,.88);border:1px solid var(--borde);max-width:560px}
+#tiempo input{flex:1;accent-color:var(--foco)}
+#hora{min-width:118px;font-size:14px}
+#leyenda{position:absolute;z-index:500;right:10px;bottom:calc(76px + env(safe-area-inset-bottom));
+  padding:8px 10px;border-radius:12px;background:rgba(18,26,44,.88);border:1px solid var(--borde);font-size:13px}
+#leyenda div{display:flex;align-items:center;gap:7px;line-height:1.7}
+#leyenda i{width:14px;height:14px;border-radius:3px;display:inline-block}
+
+/* panel */
+#panel{background:var(--panel);border-left:1px solid var(--borde);overflow-y:auto;
+  padding:18px 20px calc(24px + env(safe-area-inset-bottom))}
+#asa{display:none}
+.vacio{color:var(--tenue);padding-top:30px}
+.vacio strong{display:block;color:var(--texto);font-size:22px;margin-bottom:6px}
+
+.sitio{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.sitio h2{margin:0;font-size:18px;font-weight:700}
+.coords{color:var(--tenue);font-size:14px}
+
+/* lo memorable: la ventana de cielo */
+.ventana{display:grid;grid-template-columns:132px 1fr;gap:16px;align-items:center;margin:16px 0 10px}
+#disco{width:132px;height:132px;border-radius:50%;display:block}
+.veredicto{font-size:34px;font-weight:700;line-height:1.05;overflow-wrap:anywhere}
+.veredicto.DESPEJADO{color:var(--despejado)} .veredicto.PARCIAL{color:var(--parcial)}
+.veredicto.NUBLADO{color:var(--nublado)} .veredicto.FUERA{color:var(--tenue);font-size:26px}
+.porcentaje{font-size:17px;color:var(--tenue);margin-top:4px}
+
+dl.datos{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:16px 0;font-size:15px}
+dl.datos dt{color:var(--tenue)} dl.datos dd{margin:0}
+.alerta{border-left:3px solid var(--parcial);padding:6px 0 6px 10px;margin:10px 0;font-size:15px}
+.alerta.niebla{border-color:var(--niebla)}
+
+h3{font-size:15px;font-weight:700;margin:22px 0 8px;color:var(--texto)}
+.nota{font-size:13px;color:var(--tenue)}
+svg.serie{width:100%;height:84px;display:block}
+.barras{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;align-items:end;height:64px}
+.barras div{background:#3b4a78;border-radius:2px 2px 0 0;min-height:2px}
+.barras-et{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;font-size:11px;color:var(--tenue);text-align:center}
+
+.fila{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.radios{display:inline-flex;border:1px solid var(--borde);border-radius:999px;overflow:hidden}
+.radios button{border:0;background:transparent;padding:5px 11px;cursor:pointer;font-size:14px}
+.radios button[aria-pressed="true"]{background:#2a3a66}
+.favoritos{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.favoritos button{cursor:pointer;border:1px solid var(--borde);background:transparent;border-radius:999px;padding:4px 10px;font-size:14px}
+.favoritos button .x{color:var(--tenue);margin-left:6px}
+
+/* modo rojo para conservar la adaptación a la oscuridad */
+#rojo{position:fixed;inset:0;pointer-events:none;z-index:9999;background:#ff2a00;mix-blend-mode:multiply;display:none}
+body.modo-rojo #rojo{display:block}
+
+@media (max-width:860px){
+  #app{grid-template-columns:1fr;grid-template-rows:1fr auto}
+  #panel{border-left:0;border-top:1px solid var(--borde);border-radius:18px 18px 0 0;margin-top:-18px;
+    position:relative;z-index:600;max-height:46vh;padding:6px 16px calc(18px + env(safe-area-inset-bottom))}
+  #panel.plegado{max-height:132px;overflow:hidden}
+  #asa{display:block;width:100%;background:none;border:0;padding:8px 0 6px;cursor:pointer}
+  #asa span{display:block;width:44px;height:5px;border-radius:3px;background:var(--borde);margin:auto}
+  #tiempo{bottom:28px}
+  #leyenda{display:none}
+  .ventana{grid-template-columns:110px 1fr;gap:14px;margin-top:8px}
+  #disco{width:110px;height:110px}
+  .veredicto{font-size:30px}
+  #cabecera{left:52px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="mapa">
+    <div id="cabecera">
+      <span class="marca">Cielo</span>
+      <span class="chip num" id="edad">Cargando datos…</span>
+      <button class="boton" id="btn-ubicacion" type="button">Mi ubicación</button>
+      <button class="boton" id="btn-rojo" type="button" aria-pressed="false">Modo rojo</button>
+    </div>
+    <div id="leyenda" aria-label="Leyenda"></div>
+    <div id="tiempo">
+      <button class="boton" id="btn-play" type="button" aria-label="Animar la secuencia">▶</button>
+      <input type="range" id="deslizador" min="0" max="0" value="0" aria-label="Imagen del satélite">
+      <span id="hora" class="num">—</span>
+    </div>
+  </div>
+  <aside id="panel" aria-live="polite">
+    <button id="asa" type="button" aria-label="Mostrar u ocultar el panel"><span></span></button>
+    <div id="contenido">
+      <div class="vacio"><strong>Toca un punto del mapa</strong>
+        Te digo si sobre ese sitio hay nubes ahora, de qué tipo, cuál es la más cercana y si se acerca.
+        Cobertura: Chile y la Patagonia.</div>
+    </div>
+  </aside>
+</div>
+<div id="rojo"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+"use strict";
+const ESTILO = {
+  0:{n:"Sin dato",          c:[0,0,0,0]},
+  1:{n:"Despejado",         c:[0,0,0,0]},
+  2:{n:"Probablemente despejado", c:[227,184,92,70]},
+  3:{n:"Nube baja",         c:[150,158,176,190]},
+  4:{n:"Nube media",        c:[214,219,230,205]},
+  5:{n:"Nube alta (cirro, yunque)", c:[150,200,255,190]},
+  6:{n:"Niebla o estrato nocturno", c:[168,139,214,215]},
+};
+const NUBE = new Set([3,4,5,6]);
+const RUMBOS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSO","SO","OSO","O","ONO","NO","NNO"];
+const $ = s => document.querySelector(s);
+
+const estado = {meta:null, cuadros:[], cache:new Map(), idx:-1, sitio:null, radio:5, capa:null,
+                marcador:null, circulo:null, modelo:null, play:null};
+
+/* ── almacenamiento local (puede fallar en modo privado) ── */
+const leer = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+const guardar = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+estado.radio = leer("cielo.radio", 5);
+if (leer("cielo.rojo", false)) document.body.classList.add("modo-rojo");
+
+/* ── mapa ── */
+const mapa = L.map("mapa", {zoomControl:true, worldCopyJump:false, minZoom:3})
+  .setView(leer("cielo.vista", [-41.3, -72.9, 7]).slice(0,2), leer("cielo.vista", [-41.3,-72.9,7])[2]);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  subdomains:"abcd", maxZoom:13,
+  attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · © <a href="https://carto.com/">CARTO</a> · GOES-19 NOAA'
+}).addTo(mapa);
+mapa.on("moveend", () => { const c = mapa.getCenter(); guardar("cielo.vista", [c.lat, c.lng, mapa.getZoom()]); });
+
+const CapaNubes = L.GridLayer.extend({
+  createTile(coords) {
+    const t = document.createElement("canvas"); t.width = t.height = 256;
+    const g = rejillaActual(), G = estado.meta && estado.meta.rejilla;
+    if (!g || !G) return t;
+    const ctx = t.getContext("2d"), img = ctx.createImageData(256, 256), d = img.data;
+    const n = 256 * Math.pow(2, coords.z);
+    for (let py = 0; py < 256; py++) {
+      const Y = coords.y * 256 + py + .5;
+      const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * Y / n))) * 180 / Math.PI;
+      const r = Math.floor((G.lat_max - lat) / G.paso);
+      if (r < 0 || r >= G.filas) continue;
+      const fila = r * G.cols;
+      for (let px = 0; px < 256; px++) {
+        const lon = (coords.x * 256 + px + .5) / n * 360 - 180;
+        const c = Math.floor((lon - G.lon_min) / G.paso);
+        if (c < 0 || c >= G.cols) continue;
+        const col = ESTILO[g[fila + c]].c;
+        if (!col[3]) continue;
+        const i = (py * 256 + px) * 4;
+        d[i] = col[0]; d[i+1] = col[1]; d[i+2] = col[2]; d[i+3] = col[3];
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return t;
+  }
+});
+estado.capa = new CapaNubes({opacity:.9, zIndex:5}).addTo(mapa);
+
+$("#leyenda").innerHTML = [2,3,4,5,6].map(k => {
+  const c = ESTILO[k].c; return `<div><i style="background:rgba(${c[0]},${c[1]},${c[2]},${c[3]/255})"></i>${ESTILO[k].n}</div>`;
+}).join("");
+
+/* ── datos ── */
+async function bajarRejilla(cuadro) {
+  if (estado.cache.has(cuadro.f)) return estado.cache.get(cuadro.f);
+  const r = await fetch("data/" + cuadro.f);
+  if (!r.ok) throw new Error("No se pudo descargar " + cuadro.f);
+  let buf = await r.arrayBuffer();
+  const b = new Uint8Array(buf);
+  if (b[0] === 0x1f && b[1] === 0x8b) {
+    buf = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+  }
+  const g = new Uint8Array(buf);
+  estado.cache.set(cuadro.f, g);
+  return g;
+}
+function rejillaActual() { return estado.idx >= 0 && estado.cuadros[estado.idx] ? estado.cache.get(estado.cuadros[estado.idx].f) : null; }
+
+async function cargarMeta() {
+  try {
+    const r = await fetch("data/latest.json", {cache:"no-store"});
+    if (!r.ok) throw new Error(r.status);
+    const meta = await r.json();
+    const nuevo = !estado.meta || meta.generado !== estado.meta.generado;
+    estado.meta = meta;
+    estado.cuadros = meta.cuadros || [];
+    if (!estado.cuadros.length) { $("#edad").textContent = "Aún no hay imágenes procesadas"; return; }
+    if (nuevo) {
+      const ultimo = estado.cuadros.length - 1;
+      await bajarRejilla(estado.cuadros[ultimo]);
+      const enUltimo = estado.idx === -1 || estado.idx >= ultimo - 1;
+      const sl = $("#deslizador"); sl.max = ultimo;
+      if (enUltimo) irA(ultimo);
+      await Promise.all(estado.cuadros.map(c => bajarRejilla(c).catch(() => null)));
+      podarCache();
+      if (estado.sitio) analizarSitio();
+    }
+    pintarEdad();
+  } catch (e) {
+    $("#edad").textContent = "Sin conexión con los datos";
+    $("#edad").classList.add("aviso");
+  }
+}
+function podarCache() {
+  const vivos = new Set(estado.cuadros.map(c => c.f));
+  for (const k of estado.cache.keys()) if (!vivos.has(k)) estado.cache.delete(k);
+}
+const fechaCuadro = c => new Date(c.t.replace("Z", ":00Z"));
+const horaLocal = d => d.toLocaleTimeString("es-CL", {hour:"2-digit", minute:"2-digit", hourCycle:"h23"});
+function pintarEdad() {
+  const c = estado.cuadros[estado.cuadros.length - 1]; if (!c) return;
+  const min = Math.round((Date.now() - fechaCuadro(c)) / 60000);
+  const el = $("#edad");
+  el.textContent = `Última imagen hace ${min} min`;
+  el.classList.toggle("aviso", min > 40);
+  if (min > 40) el.textContent += " (con retraso)";
+}
+
+function irA(i) {
+  estado.idx = Math.max(0, Math.min(i, estado.cuadros.length - 1));
+  $("#deslizador").value = estado.idx;
+  const c = estado.cuadros[estado.idx];
+  $("#hora").textContent = c ? horaLocal(fechaCuadro(c)) + (estado.idx === estado.cuadros.length - 1 ? " (última)" : "") : "—";
+  estado.capa.redraw();
+  if (estado.sitio) analizarSitio(false);
+}
+$("#deslizador").addEventListener("input", e => irA(+e.target.value));
+$("#btn-play").addEventListener("click", () => {
+  if (estado.play) { clearInterval(estado.play); estado.play = null; $("#btn-play").textContent = "▶"; return; }
+  $("#btn-play").textContent = "❚❚";
+  let i = 0; irA(0);
+  estado.play = setInterval(() => {
+    i++; if (i >= estado.cuadros.length) { clearInterval(estado.play); estado.play = null; $("#btn-play").textContent = "▶"; return; }
+    irA(i);
+  }, 700);
+});
+
+/* ── análisis de un punto ── */
+function analizar(g, lat, lon, radio) {
+  const G = estado.meta.rejilla;
+  const kx = 111.32 * Math.cos(lat * Math.PI / 180) * G.paso, ky = 110.57 * G.paso;
+  const r0 = (G.lat_max - lat) / G.paso - .5, c0 = (lon - G.lon_min) / G.paso - .5;
+  if (r0 < 0 || r0 >= G.filas || c0 < 0 || c0 >= G.cols) return null;
+  const busq = 150; // km para la nube más cercana
+  const dr = Math.ceil(busq / ky), dc = Math.ceil(busq / kx);
+  let validos = 0, nubes = 0, prob = 0, tipos = {3:0,4:0,5:0,6:0}, cerca = Infinity, rumbo = null;
+  for (let r = Math.max(0, Math.floor(r0 - dr)); r <= Math.min(G.filas - 1, Math.ceil(r0 + dr)); r++) {
+    const y = (r0 - r) * ky; // km hacia el norte
+    for (let c = Math.max(0, Math.floor(c0 - dc)); c <= Math.min(G.cols - 1, Math.ceil(c0 + dc)); c++) {
+      const x = (c - c0) * kx;
+      const d = Math.hypot(x, y);
+      const v = g[r * G.cols + c];
+      if (d <= radio) {
+        if (v > 0) { validos++; if (NUBE.has(v)) { nubes++; tipos[v]++; } else if (v === 2) prob++; }
+      }
+      if (NUBE.has(v) && d < cerca) { cerca = d; rumbo = (Math.atan2(x, y) * 180 / Math.PI + 360) % 360; }
+    }
+  }
+  if (!validos) {
+    // radio menor que una celda: celda más cercana
+    const v = g[Math.round(r0) * G.cols + Math.round(c0)];
+    validos = v > 0 ? 1 : 0; nubes = NUBE.has(v) ? 1 : 0; if (NUBE.has(v)) tipos[v] = 1; prob = v === 2 ? 1 : 0;
+  }
+  const frac = validos ? nubes / validos : null;
+  return {frac, validos, prob: validos ? prob / validos : 0, tipos, cerca: isFinite(cerca) ? cerca : null, rumbo};
+}
+const veredicto = f => f == null ? "FUERA" : f <= .10 ? "DESPEJADO" : f <= .50 ? "PARCIAL" : "NUBLADO";
+const TEXTO = {DESPEJADO:"Despejado", PARCIAL:"Parcial", NUBLADO:"Nublado", FUERA:"Sin datos"};
+const rumboTxt = a => RUMBOS[Math.round(a / 22.5) % 16];
+
+function tendencia(lat, lon, radio) {
+  const pts = [];
+  estado.cuadros.forEach(c => {
+    const g = estado.cache.get(c.f); if (!g) return;
+    const a = analizar(g, lat, lon, radio); if (!a) return;
+    pts.push({t: fechaCuadro(c), frac: a.frac, cerca: a.cerca, rumbo: a.rumbo});
+  });
+  // aproximación de la nube más cercana: regresión lineal de la distancia
+  let eta = null, vel = null;
+  const fuera = pts.filter(p => p.cerca != null && p.cerca > radio).slice(-6);
+  if (fuera.length >= 3 && pts.length && pts[pts.length - 1].frac <= .5) {
+    const t0 = fuera[0].t.getTime();
+    const xs = fuera.map(p => (p.t - t0) / 3.6e6), ys = fuera.map(p => p.cerca);
+    const mx = xs.reduce((a,b)=>a+b)/xs.length, my = ys.reduce((a,b)=>a+b)/ys.length;
+    let sxy = 0, sxx = 0, syy = 0;
+    xs.forEach((x, i) => { sxy += (x-mx)*(ys[i]-my); sxx += (x-mx)**2; syy += (ys[i]-my)**2; });
+    const m = sxx ? sxy / sxx : 0, r2 = (sxx && syy) ? (sxy*sxy)/(sxx*syy) : 0;
+    vel = -m;
+    const ult = fuera[fuera.length - 1];
+    if (m < -3 && r2 > .5) eta = {min: Math.round((ult.cerca - radio) / -m * 60), vel: -m, rumbo: ult.rumbo};
+  }
+  return {pts, eta, vel};
+}
+
+/* ── panel ── */
+function seleccionar(lat, lon, nombre) {
+  estado.sitio = {lat, lon, nombre: nombre || null};
+  if (!estado.marcador) {
+    estado.marcador = L.circleMarker([lat, lon], {radius:5, color:"#9cc7ff", weight:2, fillOpacity:1, fillColor:"#121a2c"}).addTo(mapa);
+    estado.circulo = L.circle([lat, lon], {radius: estado.radio * 1000, color:"#9cc7ff", weight:1.5, fill:false, dashArray:"4 4"}).addTo(mapa);
+  } else {
+    estado.marcador.setLatLng([lat, lon]); estado.circulo.setLatLng([lat, lon]);
+  }
+  estado.circulo.setRadius(estado.radio * 1000);
+  history.replaceState(null, "", `#${lat.toFixed(4)},${lon.toFixed(4)},${estado.radio}`);
+  $("#panel").classList.remove("plegado");
+  estado.modelo = null;
+  analizarSitio();
+  pedirModelo(lat, lon);
+}
+mapa.on("click", e => seleccionar(e.latlng.lat, e.latlng.lng));
+
+function elevSolar(lat, lon, t) {
+  const inicio = Date.UTC(t.getUTCFullYear(), 0, 1);
+  const doy = Math.floor((t - inicio) / 864e5) + 1, h = t.getUTCHours() + t.getUTCMinutes() / 60;
+  const g = 2 * Math.PI / 365 * (doy - 1 + (h - 12) / 24);
+  const dec = .006918 - .399912*Math.cos(g) + .070257*Math.sin(g) - .006758*Math.cos(2*g) + .000907*Math.sin(2*g) - .002697*Math.cos(3*g) + .00148*Math.sin(3*g);
+  const eq = 229.18*(.000075 + .001868*Math.cos(g) - .032077*Math.sin(g) - .014615*Math.cos(2*g) - .040849*Math.sin(2*g));
+  const ha = ((h*60 + eq + 4*lon) / 4 - 180) * Math.PI / 180, la = lat * Math.PI / 180;
+  return 90 - Math.acos(Math.sin(la)*Math.sin(dec) + Math.cos(la)*Math.cos(dec)*Math.cos(ha)) * 180 / Math.PI;
+}
+
+function dibujarDisco(canvas, g, lat, lon, radio) {
+  const dpr = window.devicePixelRatio || 1, S = canvas.clientWidth || 150;
+  canvas.width = S * dpr; canvas.height = S * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  const G = estado.meta.rejilla, R = S / 2;
+  ctx.save(); ctx.beginPath(); ctx.arc(R, R, R - 1, 0, 2*Math.PI); ctx.clip();
+  // fondo: cielo
+  const grad = ctx.createRadialGradient(R, R, 0, R, R, R);
+  grad.addColorStop(0, "#1d2a4d"); grad.addColorStop(1, "#0d1322");
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, S, S);
+  // estrellas fijas (pseudoaleatorias por sitio)
+  let s = Math.abs(Math.round(lat * 1000 + lon * 7)) || 1;
+  const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  ctx.fillStyle = "rgba(220,227,242,.75)";
+  for (let i = 0; i < 40; i++) { ctx.beginPath(); ctx.arc(rnd()*S, rnd()*S, rnd()*.9+.3, 0, 7); ctx.fill(); }
+  // celdas dentro del radio (escala: borde del disco = radio)
+  const kx = 111.32 * Math.cos(lat * Math.PI / 180) * G.paso, ky = 110.57 * G.paso;
+  const r0 = (G.lat_max - lat) / G.paso - .5, c0 = (lon - G.lon_min) / G.paso - .5;
+  const esc = R / radio, dr = Math.ceil(radio / ky) + 1, dc = Math.ceil(radio / kx) + 1;
+  for (let r = Math.floor(r0 - dr); r <= Math.ceil(r0 + dr); r++) for (let c = Math.floor(c0 - dc); c <= Math.ceil(c0 + dc); c++) {
+    if (r < 0 || c < 0 || r >= G.filas || c >= G.cols) continue;
+    const v = g[r * G.cols + c]; if (!NUBE.has(v) && v !== 2) continue;
+    const col = ESTILO[v].c, x = R + (c - c0) * kx * esc, y = R + (r - r0) * ky * esc;
+    ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${Math.min(1, col[3]/255 + .1)})`;
+    ctx.fillRect(x - kx*esc/2 - .5, y - ky*esc/2 - .5, kx*esc + 1, ky*esc + 1);
+  }
+  ctx.restore();
+  ctx.strokeStyle = "#2a3556"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(R, R, R - 1, 0, 7); ctx.stroke();
+  ctx.fillStyle = "#8d98b8"; ctx.font = "11px 'Atkinson Hyperlegible',sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("N", R, 12); ctx.fillText("S", R, S - 4);
+  ctx.textAlign = "left"; ctx.fillText("O", 4, R + 4); ctx.textAlign = "right"; ctx.fillText("E", S - 4, R + 4);
+}
+
+function serieSVG(pts, idx) {
+  if (pts.length < 2) return '<p class="nota">Hace falta más de una imagen para ver la evolución.</p>';
+  const W = 340, H = 84, pad = 16;
+  const t0 = pts[0].t.getTime(), t1 = pts[pts.length-1].t.getTime() || t0 + 1;
+  const X = t => pad + (t - t0) / (t1 - t0 || 1) * (W - 2*pad), Y = f => H - 18 - f * (H - 28);
+  const linea = pts.map((p, i) => `${i ? "L" : "M"}${X(p.t.getTime()).toFixed(1)},${Y(p.frac ?? 0).toFixed(1)}`).join(" ");
+  const sel = pts[Math.min(idx, pts.length - 1)];
+  return `<svg class="serie" viewBox="0 0 ${W} ${H}" role="img" aria-label="Nubosidad en el radio a lo largo del tiempo">
+    <line x1="${pad}" x2="${W-pad}" y1="${Y(.5)}" y2="${Y(.5)}" stroke="#2a3556" stroke-dasharray="3 3"/>
+    <line x1="${pad}" x2="${W-pad}" y1="${Y(.1)}" y2="${Y(.1)}" stroke="#2a3556" stroke-dasharray="3 3"/>
+    <path d="${linea}" fill="none" stroke="#9cc7ff" stroke-width="2"/>
+    ${pts.map(p => `<circle cx="${X(p.t.getTime())}" cy="${Y(p.frac ?? 0)}" r="2.5" fill="#9cc7ff"/>`).join("")}
+    ${sel ? `<circle cx="${X(sel.t.getTime())}" cy="${Y(sel.frac ?? 0)}" r="5" fill="none" stroke="#dce3f2"/>` : ""}
+    <text x="${pad}" y="${H-3}" fill="#8d98b8" font-size="11">${horaLocal(pts[0].t)}</text>
+    <text x="${W-pad}" y="${H-3}" fill="#8d98b8" font-size="11" text-anchor="end">${horaLocal(pts[pts.length-1].t)}</text>
+    <text x="${W-pad}" y="${Y(.5)-3}" fill="#8d98b8" font-size="10" text-anchor="end">50 %</text>
+    <text x="${W-pad}" y="${Y(.1)-3}" fill="#8d98b8" font-size="10" text-anchor="end">10 %</text>
+  </svg>`;
+}
+
+function analizarSitio() {
+  const S = estado.sitio, g = rejillaActual();
+  if (!S) return;
+  const cont = $("#contenido");
+  const cab = `<div class="sitio"><h2>${S.nombre ? esc(S.nombre) : "Punto elegido"}</h2>
+    <span class="coords num">${S.lat.toFixed(3)}°, ${S.lon.toFixed(3)}°</span></div>`;
+  if (!g || !estado.meta) { cont.innerHTML = cab + '<p class="nota">Esperando los datos del satélite…</p>'; return; }
+  const a = analizar(g, S.lat, S.lon, estado.radio);
+  if (!a) {
+    cont.innerHTML = cab + `<div class="ventana"><div></div><div><div class="veredicto FUERA">Fuera de cobertura</div></div></div>
+      <p class="nota">El mapa cubre de ${-estado.meta.rejilla.lat_max}°S a ${-estado.meta.rejilla.lat_min}°S y de ${-estado.meta.rejilla.lon_max}°O a ${-estado.meta.rejilla.lon_min}°O.</p>`
+      + bloqueModelo() + bloqueAcciones();
+    conectarAcciones(); return;
+  }
+  const v = veredicto(a.frac);
+  const tr = tendencia(S.lat, S.lon, estado.radio);
+  const t = fechaCuadro(estado.cuadros[estado.idx]);
+  const sol = elevSolar(S.lat, S.lon, new Date());
+  const noche = sol < -5;
+  const tipos = Object.entries(a.tipos).filter(([,n]) => n).map(([k,n]) => `${ESTILO[k].n.toLowerCase()} ${Math.round(n / a.validos * 100)} %`);
+  const alertas = [];
+  if (a.tipos[6]) alertas.push(`<div class="alerta niebla">El canal de 3,9 µm indica niebla o estrato bajo nocturno. El infrarrojo normal no lo ve y la máscara lo daba como despejado.</div>`);
+  if (a.prob > .3) alertas.push(`<div class="alerta">Más del 30 % del radio es "probablemente despejado": puede haber bruma o cirro muy tenue. Mala transparencia.</div>`);
+  if (sol > -12 && sol < 0) alertas.push(`<div class="alerta">Crepúsculo (sol a ${sol.toFixed(0)}°): el test de niebla no es fiable hasta que el sol baje de −5°.</div>`);
+  const m = estado.modelo;
+  if (m && m.current && v === "DESPEJADO" && m.current.cloud_cover_high > 60)
+    alertas.push(`<div class="alerta">El satélite lo ve despejado pero el modelo pone ${m.current.cloud_cover_high} % de nube alta: revisa si hay cirro fino.</div>`);
+  if (m && m.current && (m.current.temperature_2m - m.current.dew_point_2m) < 2)
+    alertas.push(`<div class="alerta">Temperatura y punto de rocío casi iguales (${m.current.temperature_2m}° / ${m.current.dew_point_2m}°): riesgo de rocío en la óptica y de niebla.</div>`);
+
+  let llegada = "Sin nubes en 150 km";
+  if (a.cerca != null) {
+    if (a.cerca <= estado.radio) llegada = "Encima del sitio";
+    else llegada = `${a.cerca.toFixed(0)} km al ${rumboTxt(a.rumbo)}`;
+  }
+  let mov = "Sin datos suficientes";
+  if (tr.eta) mov = `Se acerca desde el ${rumboTxt(tr.eta.rumbo)} a ${tr.eta.vel.toFixed(0)} km/h. Llegada en unos ${fmtMin(tr.eta.min)}.`;
+  else if (tr.vel != null && tr.vel < -3) mov = "Se acerca, pero de forma irregular";
+  else if (tr.vel != null && tr.vel > 3) mov = `Se aleja a ${tr.vel.toFixed(0)} km/h`;
+  else if (tr.vel != null) mov = "Estable";
+  if (a.cerca != null && a.cerca <= estado.radio) mov = "—";
+
+  cont.innerHTML = cab + `
+    <div class="ventana">
+      <canvas id="disco" aria-label="Vista del cielo dentro del radio de ${estado.radio} km"></canvas>
+      <div>
+        <div class="veredicto ${v}">${TEXTO[v]}</div>
+        <div class="porcentaje num">${Math.round(a.frac * 100)} % de nubes en ${estado.radio} km</div>
+        <div class="nota num">Imagen de las ${horaLocal(t)}</div>
+      </div>
+    </div>
+    ${alertas.join("")}
+    <dl class="datos num">
+      <dt>Nube más cercana</dt><dd>${llegada}</dd>
+      <dt>Movimiento</dt><dd>${mov}</dd>
+      ${tipos.length ? `<dt>Tipo</dt><dd>${tipos.join(", ")}</dd>` : ""}
+      <dt>Sol</dt><dd>${sol.toFixed(0)}° ${noche ? "(noche)" : sol < 0 ? "(crepúsculo)" : "(día)"}</dd>
+    </dl>
+    <h3>Nubosidad en las últimas horas</h3>
+    ${serieSVG(tr.pts, estado.idx)}
+    ${bloqueModelo()}
+    ${bloqueAcciones()}
+    <p class="nota" style="margin-top:18px">Nubes en su posición real (corregidas de paralaje con la altura del tope).
+      Satélite GOES-19, máscara de nubes NOAA, resolución ~2 km.</p>`;
+  dibujarDisco($("#disco"), g, S.lat, S.lon, estado.radio);
+  conectarAcciones();
+}
+const fmtMin = m => m < 90 ? `${m} min` : `${(m/60).toFixed(1).replace(".", ",")} h`;
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function bloqueModelo() {
+  const m = estado.modelo;
+  if (!m) return '<h3>Previsión del modelo</h3><p class="nota">Cargando Open-Meteo…</p>';
+  if (m.error) return '<h3>Previsión del modelo</h3><p class="nota">No se pudo consultar Open-Meteo.</p>';
+  const c = m.current, h = m.hourly;
+  const barras = h.time.slice(0, 12).map((tt, i) => `<div title="${tt.slice(11)} ${h.cloud_cover[i]} %" style="height:${Math.max(3, h.cloud_cover[i])}%"></div>`).join("");
+  const et = h.time.slice(0, 12).map((tt, i) => `<span>${i % 3 ? "" : tt.slice(11, 13) + "h"}</span>`).join("");
+  return `<h3>Previsión del modelo</h3>
+    <dl class="datos num" style="margin-top:0">
+      <dt>Ahora</dt><dd>${c.cloud_cover} % (baja ${c.cloud_cover_low}, media ${c.cloud_cover_mid}, alta ${c.cloud_cover_high})</dd>
+      <dt>Aire</dt><dd>${c.temperature_2m} °C, rocío ${c.dew_point_2m} °C, viento ${c.wind_speed_10m} km/h</dd>
+    </dl>
+    <div class="barras" aria-label="Nubosidad prevista las próximas 12 horas">${barras}</div>
+    <div class="barras-et">${et}</div>
+    <p class="nota">Nubosidad total prevista, próximas 12 h (hora local del sitio).</p>`;
+}
+async function pedirModelo(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`
+    + "&current=temperature_2m,dew_point_2m,wind_speed_10m,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high"
+    + "&hourly=cloud_cover&forecast_hours=12&timezone=auto";
+  try {
+    const r = await fetch(url); if (!r.ok) throw 0;
+    const j = await r.json();
+    if (estado.sitio && estado.sitio.lat === lat && estado.sitio.lon === lon) { estado.modelo = j; analizarSitio(); }
+  } catch {
+    if (estado.sitio && estado.sitio.lat === lat) { estado.modelo = {error:true}; analizarSitio(); }
+  }
+}
+
+function bloqueAcciones() {
+  const favs = leer("cielo.favoritos", []);
+  return `<h3>Radio de análisis</h3>
+    <div class="radios" role="group" aria-label="Radio de análisis">
+      ${[2,5,10,20].map(r => `<button type="button" data-radio="${r}" aria-pressed="${r === estado.radio}">${r} km</button>`).join("")}
+    </div>
+    <h3>Sitios guardados</h3>
+    <div class="fila"><button class="boton" type="button" id="btn-guardar">Guardar este sitio</button></div>
+    <div class="favoritos">${favs.map((f, i) => `<button type="button" data-fav="${i}">${esc(f.nombre)}<span class="x" data-borrar="${i}" aria-label="Borrar ${esc(f.nombre)}">×</span></button>`).join("")}</div>`;
+}
+function conectarAcciones() {
+  document.querySelectorAll("[data-radio]").forEach(b => b.onclick = () => {
+    estado.radio = +b.dataset.radio; guardar("cielo.radio", estado.radio);
+    if (estado.circulo) estado.circulo.setRadius(estado.radio * 1000);
+    const S = estado.sitio; history.replaceState(null, "", `#${S.lat.toFixed(4)},${S.lon.toFixed(4)},${estado.radio}`);
+    analizarSitio();
+  });
+  const bg = $("#btn-guardar");
+  if (bg) bg.onclick = () => {
+    const S = estado.sitio, nombre = prompt("Nombre del sitio", S.nombre || "");
+    if (!nombre) return;
+    const favs = leer("cielo.favoritos", []).filter(f => f.nombre !== nombre);
+    favs.push({nombre, lat: S.lat, lon: S.lon}); guardar("cielo.favoritos", favs);
+    S.nombre = nombre; analizarSitio();
+  };
+  document.querySelectorAll("[data-fav]").forEach(b => b.onclick = e => {
+    const favs = leer("cielo.favoritos", []);
+    if (e.target.dataset.borrar != null) { favs.splice(+e.target.dataset.borrar, 1); guardar("cielo.favoritos", favs); analizarSitio(); return; }
+    const f = favs[+b.dataset.fav]; mapa.setView([f.lat, f.lon], Math.max(mapa.getZoom(), 9)); seleccionar(f.lat, f.lon, f.nombre);
+  });
+}
+
+/* ── controles ── */
+$("#btn-ubicacion").onclick = () => {
+  if (!navigator.geolocation) return;
+  $("#btn-ubicacion").textContent = "Buscando…";
+  navigator.geolocation.getCurrentPosition(p => {
+    $("#btn-ubicacion").textContent = "Mi ubicación";
+    mapa.setView([p.coords.latitude, p.coords.longitude], 10);
+    seleccionar(p.coords.latitude, p.coords.longitude, "Mi ubicación");
+  }, () => { $("#btn-ubicacion").textContent = "Ubicación no disponible"; }, {enableHighAccuracy:false, timeout:10000});
+};
+$("#btn-rojo").setAttribute("aria-pressed", document.body.classList.contains("modo-rojo"));
+$("#btn-rojo").onclick = () => {
+  const on = document.body.classList.toggle("modo-rojo");
+  $("#btn-rojo").setAttribute("aria-pressed", on); guardar("cielo.rojo", on);
+};
+$("#asa").onclick = () => $("#panel").classList.toggle("plegado");
+
+/* ── arranque ── */
+(async () => {
+  await cargarMeta();
+  const h = location.hash.slice(1).split(",").map(Number);
+  if (h.length >= 2 && h.every(isFinite)) {
+    if (h[2]) estado.radio = h[2];
+    mapa.setView([h[0], h[1]], Math.max(mapa.getZoom(), 8));
+    seleccionar(h[0], h[1]);
+  } else if (window.matchMedia("(max-width:860px)").matches) {
+    $("#panel").classList.add("plegado");
+  }
+  setInterval(cargarMeta, 5 * 60 * 1000);
+  setInterval(pintarEdad, 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) cargarMeta(); });
+})();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
