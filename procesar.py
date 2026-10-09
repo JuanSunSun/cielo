@@ -420,6 +420,12 @@ def main(argv=None):
 
     filas = int(round((REGION["lat_max"] - REGION["lat_min"]) / REGION["paso"]))
     cols = int(round((REGION["lon_max"] - REGION["lon_min"]) / REGION["paso"]))
+    try:
+        from movimiento import campo_movimiento
+        mov = campo_movimiento(orden, dir_data, filas, cols, REGION, log=log)
+    except Exception as e:
+        log(f"  movimiento: ERROR {e}")
+        mov = None
     meta = {
         "generado": ahora.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "satelite": "GOES-19",
@@ -427,6 +433,7 @@ def main(argv=None):
         "rejilla": {**REGION, "filas": filas, "cols": cols},
         "codigos": CODIGOS,
         "cuadros": orden,
+        "movimiento": mov,
     }
     with open(os.path.join(dir_data, "latest.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, ensure_ascii=False, indent=1)

@@ -93,6 +93,11 @@ dl.datos{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:16px 0;
 dl.datos dt{color:var(--tenue)} dl.datos dd{margin:0}
 .alerta{border-left:3px solid var(--parcial);padding:6px 0 6px 10px;margin:10px 0;font-size:15px}
 .alerta.niebla{border-color:var(--niebla)}
+.alerta.bien{border-color:var(--despejado)}
+.alerta.info{border-color:var(--tenue)}
+.etq-pron{background:rgba(18,26,44,.85)!important;border:1px solid var(--borde)!important;color:var(--tenue)!important;
+  font-size:11px!important;padding:1px 5px!important;box-shadow:none!important}
+.etq-pron:before{display:none}
 
 h3{font-size:15px;font-weight:700;margin:22px 0 8px;color:var(--texto)}
 .nota{font-size:13px;color:var(--tenue)}
@@ -137,6 +142,7 @@ body.modo-rojo #rojo{display:block}
       <span class="marca">Cielo</span>
       <span class="chip num" id="edad">Cargando datos…</span>
       <button class="boton" id="btn-ubicacion" type="button">Mi ubicación</button>
+      <button class="boton" id="btn-mov" type="button" aria-pressed="false">Movimiento</button>
       <button class="boton" id="btn-rojo" type="button" aria-pressed="false">Modo rojo</button>
     </div>
     <div id="leyenda" aria-label="Leyenda"></div>
@@ -221,6 +227,8 @@ const CapaNubes = L.GridLayer.extend({
     return t;
   }
 });
+// los botones y paneles superpuestos no deben contar como clic sobre el mapa
+["#cabecera", "#tiempo", "#leyenda"].forEach(q => L.DomEvent.disableClickPropagation($(q)));
 estado.capa = new CapaNubes({opacity:.9, zIndex:5}).addTo(mapa);
 
 $("#leyenda").innerHTML = [2,3,4,5,6].map(k => {
@@ -261,6 +269,7 @@ async function cargarMeta() {
       await Promise.all(estado.cuadros.map(c => bajarRejilla(c).catch(() => null)));
       podarCache();
       if (estado.sitio) analizarSitio();
+      if (estado.capaCampo && mapa.hasLayer(estado.capaCampo)) dibujarCampoMovimiento();
     }
     pintarEdad();
   } catch (e) {
@@ -359,6 +368,145 @@ function tendencia(lat, lon, radio) {
   return {pts, eta, vel};
 }
 
+/* ── movimiento de las nubes y pronóstico por advección ── */
+// Vector (u este, v norte, km/h) para un punto: mediana ponderada de los vectores a < 450 km.
+function vectorLocal(lat, lon) {
+  const M = estado.meta && estado.meta.movimiento;
+  if (!M || !M.vectores || !M.vectores.length) return null;
+  const kx = 111.32 * Math.cos(lat * Math.PI / 180);
+  const cand = [];
+  for (const x of M.vectores) {
+    const d = Math.hypot((x.lat - lat) * 110.57, (x.lon - lon) * kx);
+    if (d <= 450) cand.push({u:x.u, v:x.v, w:x.c / (1 + (d / 200) ** 2)});
+  }
+  const mediana = (arr, k) => {
+    const a = arr.slice().sort((p, q) => p[k] - q[k]), tot = a.reduce((s, x) => s + x.w, 0);
+    let acc = 0; for (const x of a) { acc += x.w; if (acc >= tot / 2) return x[k]; }
+    return a[a.length - 1][k];
+  };
+  if (cand.length < 2) {
+    return M.global ? {u:M.global.u, v:M.global.v, dispersion:null, fuente:"regional"} : null;
+  }
+  const u = mediana(cand, "u"), v = mediana(cand, "v");
+  const dev = cand.map(x => ({d:Math.hypot(x.u - u, x.v - v), w:x.w}));
+  return {u, v, dispersion:mediana(dev, "d"), fuente:"local"};
+}
+const HORIZONTE_MIN = 210, PASO_MIN = 15, FIABLE_MIN = 120;
+
+// Para cada instante futuro, mira el área aguas arriba (donde está ahora la nube que llegará).
+// La incertidumbre (velocidad ±20 %, dirección, evolución) se absorbe ensanchando el radio con la distancia.
+function pronostico(lat, lon, radio) {
+  const k = estado.cuadros.length - 1; if (k < 0) return null;
+  const g = estado.cache.get(estado.cuadros[k].f), mv = vectorLocal(lat, lon);
+  if (!g || !mv) return null;
+  const vel = Math.hypot(mv.u, mv.v), t0 = fechaCuadro(estado.cuadros[k]);
+  const kx = 111.32 * Math.cos(lat * Math.PI / 180), pasos = [];
+  for (let m = 0; m <= HORIZONTE_MIN; m += PASO_MIN) {
+    const h = m / 60, dist = vel * h;
+    const la = lat - mv.v * h / 110.57, lo = lon - mv.u * h / kx;
+    const rEf = Math.hypot(radio, 0.2 * dist);
+    const a = analizar(g, la, lo, rEf);
+    pasos.push({min:m, t:new Date(t0.getTime() + m * 60000), frac:a ? a.frac : null, la, lo, rEf, dist});
+  }
+  const destino = (Math.atan2(mv.u, mv.v) * 180 / Math.PI + 360) % 360;
+  return {mv, vel, pasos, t0, destino, origen:(destino + 180) % 360, estacionaria:vel < 5};
+}
+
+// Primer instante (interpolado) en que la serie cruza un umbral hacia arriba o hacia abajo.
+function cruce(pasos, umbral, haciaArriba) {
+  for (let i = 1; i < pasos.length; i++) {
+    const a = pasos[i - 1].frac, b = pasos[i].frac; if (a == null || b == null) continue;
+    const pasa = haciaArriba ? (a <= umbral && b > umbral) : (a > umbral && b <= umbral);
+    if (pasa) {
+      const f = (umbral - a) / (b - a || 1);
+      return new Date(pasos[i - 1].t.getTime() + f * (pasos[i].t - pasos[i - 1].t));
+    }
+  }
+  return null;
+}
+function resumenPronostico(P) {
+  const ahora = Date.now();
+  const p = P.pasos.filter(x => x.t.getTime() >= ahora - 10 * 60000 && x.frac != null);
+  if (p.length < 3) return null;
+  const hasta = new Date(p[0].t.getTime() + FIABLE_MIN * 60000);
+  const f0 = p[0].frac, lim = p.filter(x => x.t <= hasta);
+  const en = d => `hacia las ${horaLocal(d)} (en ${fmtMin(Math.max(1, Math.round((d - ahora) / 60000)))})`;
+  const lejano = lim[lim.length - 1].t < p[p.length - 1].t;
+  if (P.estacionaria) return {tono:"info", txt:"Las nubes apenas se mueven: no se puede extrapolar. Vale lo que se ve ahora."};
+  if (f0 <= .10) {
+    const c1 = cruce(p, .10, true), c2 = cruce(p, .50, true);
+    if (c1) return {tono:"aviso", txt:`Despejado ahora. Las nubes entran en el radio ${en(c1)}` + (c2 ? `; cubierto del todo ${en(c2)}.` : ".")};
+    return {tono:"bien", txt:`Despejado durante las próximas ${lejano ? "2 h" : "3 h"} según el movimiento actual.`};
+  }
+  if (f0 > .50) {
+    const c1 = cruce(p, .10, false), c0 = cruce(p, .50, false);
+    if (c1) return {tono:"bien", txt:`Nublado ahora. Se despeja ${en(c1)}.`};
+    if (c0) return {tono:"info", txt:`Nublado ahora. Mejora a parcial ${en(c0)}, sin llegar a despejar.`};
+    return {tono:"aviso", txt:"Nublado ahora y sin mejora a la vista en las próximas horas."};
+  }
+  const c1 = cruce(p, .10, false), c2 = cruce(p, .50, true);
+  if (c2) return {tono:"aviso", txt:`Parcial ahora. Se cubre ${en(c2)}.`};
+  if (c1) return {tono:"bien", txt:`Parcial ahora. Se despeja ${en(c1)}.`};
+  return {tono:"info", txt:"Parcial y sin cambios importantes previstos en las próximas horas."};
+}
+function bloquePronostico(P, radio) {
+  if (!P) return '<h3>Próximas horas</h3><p class="nota">Aún no hay suficiente información del movimiento de las nubes en esta zona (hace falta nube con contornos, no cielo uniforme).</p>';
+  const R = resumenPronostico(P), ahora = Date.now();
+  const p = P.pasos.filter(x => x.t.getTime() >= ahora - 10 * 60000);
+  const color = f => f == null ? "var(--borde)" : f <= .10 ? "var(--despejado)" : f <= .50 ? "var(--parcial)" : "var(--nublado)";
+  const barras = p.map(x => {
+    const pct = x.frac == null ? 8 : Math.max(10, Math.round(x.frac * 100));
+    const dudoso = x.min > FIABLE_MIN;
+    return `<div title="${horaLocal(x.t)} · ${x.frac == null ? "sin datos" : Math.round(x.frac * 100) + " % nubes"}${dudoso ? " (menos fiable)" : ""}"
+      style="height:${pct}%;background:${color(x.frac)};opacity:${dudoso ? .45 : 1}"></div>`;
+  }).join("");
+  const et = p.map((x, i) => `<span>${i % 2 ? "" : horaLocal(x.t).slice(0, 5)}</span>`).join("");
+  const dir = P.estacionaria ? "Casi sin movimiento"
+    : `Las nubes van hacia el ${rumboTxt(P.destino)} a ${P.vel.toFixed(0)} km/h (vienen del ${rumboTxt(P.origen)})`;
+  const calidad = P.mv.dispersion == null ? "Estimación regional: poca nube cerca"
+    : P.mv.dispersion > 15 ? "Movimiento incierto: los vectores vecinos discrepan" : "Movimiento coherente";
+  return `<h3>Próximas horas</h3>
+    ${R ? `<div class="alerta ${R.tono === "bien" ? "bien" : R.tono === "info" ? "info" : ""}">${R.txt}</div>` : ""}
+    <div class="barras" style="height:56px" aria-label="Nubosidad prevista en el radio, cada 15 minutos">${barras}</div>
+    <div class="barras-et num">${et}</div>
+    <p class="nota">${dir}. ${calidad}.<br>Extrapolación de la imagen de las ${horaLocal(P.t0)}; fiable hasta ~2 h.
+      No prevé nubes que se formen o se disipen, ni las ligadas a la montaña.</p>`;
+}
+
+// Flecha y áreas aguas arriba en el mapa
+function dibujarPronostico(P, lat, lon) {
+  if (!estado.capaPron) estado.capaPron = L.layerGroup().addTo(mapa);
+  const cp = estado.capaPron; cp.clearLayers();
+  if (!P || P.estacionaria) return;
+  const kx = 111.32 * Math.cos(lat * Math.PI / 180);
+  const pts = [[lat, lon]];
+  for (const h of [1, 2, 3]) {
+    const la = lat - P.mv.v * h / 110.57, lo = lon - P.mv.u * h / kx;
+    pts.push([la, lo]);
+    const r = Math.hypot(estado.radio, 0.2 * P.vel * h) * 1000;
+    L.circle([la, lo], {radius:r, color:h <= 2 ? "#9cc7ff" : "#6b7aa6", weight:1, fill:false, dashArray:"3 5", interactive:false}).addTo(cp)
+      .bindTooltip(`+${h} h`, {permanent:true, direction:"center", className:"etq-pron"});
+  }
+  L.polyline(pts, {color:"#9cc7ff", weight:1.5, opacity:.8, dashArray:"2 6", interactive:false}).addTo(cp);
+}
+
+// Campo de movimiento completo (botón de la cabecera)
+function dibujarCampoMovimiento() {
+  if (!estado.capaCampo) estado.capaCampo = L.layerGroup();
+  const cc = estado.capaCampo; cc.clearLayers();
+  const M = estado.meta && estado.meta.movimiento; if (!M) return;
+  for (const x of M.vectores) {
+    if (x.c < .3) continue;
+    const vel = Math.hypot(x.u, x.v); if (vel < 2) continue;
+    const kx = 111.32 * Math.cos(x.lat * Math.PI / 180);
+    const punta = [x.lat + x.v / 110.57, x.lon + x.u / kx];          // recorrido en 1 h
+    const ang = Math.atan2(x.v, x.u), cab = vel * .28;
+    const ala = s => [punta[0] - cab * Math.sin(ang + s) / 110.57, punta[1] - cab * Math.cos(ang + s) / kx];
+    L.polyline([[x.lat, x.lon], punta], {color:"#ffffff", weight:1.6, opacity:.75, interactive:false}).addTo(cc);
+    L.polyline([ala(.45), punta, ala(-.45)], {color:"#ffffff", weight:1.6, opacity:.75, interactive:false}).addTo(cc);
+  }
+}
+
 /* ── panel ── */
 function seleccionar(lat, lon, nombre) {
   estado.sitio = {lat, lon, nombre: nombre || null};
@@ -452,7 +600,7 @@ function analizarSitio() {
     cont.innerHTML = cab + `<div class="ventana"><div></div><div><div class="veredicto FUERA">Fuera de cobertura</div></div></div>
       <p class="nota">El mapa cubre de ${-estado.meta.rejilla.lat_max}°S a ${-estado.meta.rejilla.lat_min}°S y de ${-estado.meta.rejilla.lon_max}°O a ${-estado.meta.rejilla.lon_min}°O.</p>`
       + bloqueModelo() + bloqueAcciones();
-    conectarAcciones(); return;
+    dibujarPronostico(null); conectarAcciones(); return;
   }
   const v = veredicto(a.frac);
   const tr = tendencia(S.lat, S.lon, estado.radio);
@@ -482,7 +630,10 @@ function analizarSitio() {
   else if (tr.vel != null && tr.vel < -3) mov = "Se acerca, pero de forma irregular";
   else if (tr.vel != null && tr.vel > 3) mov = `Se aleja a ${tr.vel.toFixed(0)} km/h`;
   else if (tr.vel != null) mov = "Estable";
-  if (a.cerca != null && a.cerca <= estado.radio) mov = "—";
+  const pr = pronostico(S.lat, S.lon, estado.radio);
+  if (pr) mov = pr.estacionaria ? "Casi estacionarias"
+    : `Hacia el ${rumboTxt(pr.destino)} a ${pr.vel.toFixed(0)} km/h (del ${rumboTxt(pr.origen)})`;
+  if (a.cerca != null && a.cerca <= estado.radio && !pr) mov = "—";
 
   cont.innerHTML = cab + `
     <div class="ventana">
@@ -500,6 +651,7 @@ function analizarSitio() {
       ${tipos.length ? `<dt>Tipo</dt><dd>${tipos.join(", ")}</dd>` : ""}
       <dt>Sol</dt><dd>${sol.toFixed(0)}° ${noche ? "(noche)" : sol < 0 ? "(crepúsculo)" : "(día)"}</dd>
     </dl>
+    ${bloquePronostico(pr, estado.radio)}
     <h3>Nubosidad en las últimas horas</h3>
     ${serieSVG(tr.pts, estado.idx)}
     ${bloqueModelo()}
@@ -507,6 +659,7 @@ function analizarSitio() {
     <p class="nota" style="margin-top:18px">Nubes en su posición real (corregidas de paralaje con la altura del tope).
       Satélite GOES-19, máscara de nubes NOAA, resolución ~2 km.</p>`;
   dibujarDisco($("#disco"), g, S.lat, S.lon, estado.radio);
+  dibujarPronostico(pr, S.lat, S.lon);
   conectarAcciones();
 }
 const fmtMin = m => m < 90 ? `${m} min` : `${(m/60).toFixed(1).replace(".", ",")} h`;
@@ -582,6 +735,11 @@ $("#btn-ubicacion").onclick = () => {
     mapa.setView([p.coords.latitude, p.coords.longitude], 10);
     seleccionar(p.coords.latitude, p.coords.longitude, "Mi ubicación");
   }, () => { $("#btn-ubicacion").textContent = "Ubicación no disponible"; }, {enableHighAccuracy:false, timeout:10000});
+};
+$("#btn-mov").onclick = () => {
+  const on = $("#btn-mov").getAttribute("aria-pressed") !== "true";
+  $("#btn-mov").setAttribute("aria-pressed", on);
+  if (on) { dibujarCampoMovimiento(); estado.capaCampo.addTo(mapa); } else if (estado.capaCampo) mapa.removeLayer(estado.capaCampo);
 };
 $("#btn-rojo").setAttribute("aria-pressed", document.body.classList.contains("modo-rojo"));
 $("#btn-rojo").onclick = () => {

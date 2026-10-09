@@ -43,3 +43,16 @@ pip install -r requirements.txt
 python procesar.py --salida _site      # descarga GOES-19 real
 cp -r app/. _site/ && python -m http.server -d _site 8000
 ```
+
+## Movimiento de las nubes y pronóstico a corto plazo
+
+`movimiento.py` mide hacia dónde se mueven las nubes comparando el cuadro más reciente con el de ~30 min antes
+(correlación de fase por teselas de ~210 km; los bordes rectos, que solo fijan la componente perpendicular,
+se resuelven con las teselas vecinas por mínimos cuadrados robustos). El resultado va en `data/latest.json`
+(`movimiento.vectores`, en km/h este/norte).
+
+La app, para el punto elegido, mira el área aguas arriba (`posición − vector·t`, con el radio ensanchado un 20 %
+de la distancia recorrida) cada 15 min hasta 3,5 h y resume cuándo entran o se van las nubes. Es una extrapolación:
+no prevé nubes que se formen o se disipen, ni las ligadas al relieve. Fiable hasta ~2 h.
+
+Prueba del módulo: `python tests/test_movimiento.py`.
