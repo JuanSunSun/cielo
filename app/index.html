@@ -461,6 +461,8 @@ function analizarSitio() {
   const noche = sol < -5;
   const tipos = Object.entries(a.tipos).filter(([,n]) => n).map(([k,n]) => `${ESTILO[k].n.toLowerCase()} ${Math.round(n / a.validos * 100)} %`);
   const alertas = [];
+  const edadMin = Math.round((Date.now() - t) / 60000);
+  if (edadMin > 45) alertas.push(`<div class="alerta">Esta imagen es de hace ${edadMin >= 90 ? (edadMin/60).toFixed(1).replace(".", ",") + " h" : edadMin + " min"}: el cielo puede haber cambiado desde entonces.</div>`);
   if (a.tipos[6]) alertas.push(`<div class="alerta niebla">El canal de 3,9 µm indica niebla o estrato bajo nocturno. El infrarrojo normal no lo ve y la máscara lo daba como despejado.</div>`);
   if (a.prob > .3) alertas.push(`<div class="alerta">Más del 30 % del radio es "probablemente despejado": puede haber bruma o cirro muy tenue. Mala transparencia.</div>`);
   if (sol > -12 && sol < 0) alertas.push(`<div class="alerta">Crepúsculo (sol a ${sol.toFixed(0)}°): el test de niebla no es fiable hasta que el sol baje de −5°.</div>`);
