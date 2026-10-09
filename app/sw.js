@@ -1,5 +1,5 @@
 // Service worker de Cielo: la app funciona sin red con los últimos datos vistos.
-const VERSION = "cielo-v3";
+const VERSION = "cielo-v4";
 const BASE = ["./", "index.html", "manifest.webmanifest", "icono-192.png", "icono-512.png", "icono-180.png"];
 
 self.addEventListener("install", e => {

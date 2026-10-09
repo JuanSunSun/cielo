@@ -8,7 +8,7 @@ celda lleva un código:
 
     0  sin dato
     1  despejado
-    2  probablemente despejado (bruma / cirro muy tenue posible)
+    2  despejado dudoso: probabilidad de nube 0.35–0.5 (bruma / cirro tenue posible)
     3  nube baja   (tope < 2.5 km)
     4  nube media  (2.5–6 km, o altura desconocida)
     5  nube alta   (> 6 km)
@@ -57,8 +57,9 @@ BT11_MIN_NIEBLA = 253.0     # K, evita superficies muy frías (nieve, hielo)
 H_BAJA = 2500.0             # m
 H_ALTA = 6000.0             # m
 VZA_MAX = 72.0              # grados; más allá se marca sin dato
+PROB_DUDOSA = 0.35          # prob. de nube a partir de la cual un píxel "despejado" se marca dudoso
 
-CODIGOS = {0: "sin dato", 1: "despejado", 2: "probablemente despejado", 3: "nube baja",
+CODIGOS = {0: "sin dato", 1: "despejado", 2: "despejado dudoso", 3: "nube baja",
            4: "nube media", 5: "nube alta", 6: "niebla/estrato nocturno"}
 
 PATRON_T = re.compile(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})")
@@ -238,7 +239,9 @@ def procesar_cuadro(goes: GOES, t: datetime, f_acm: str, region=REGION):
         sy, sx = caja_indices(ds, region, margen_px=12)
         lat, lon, lon_sat = latlon_caja(ds, sy, sx)
         bcm = leer_caja(ds, "BCM", sy, sx)
-        acm = leer_caja(ds, "ACM", sy, sx) if "ACM" in ds else np.full_like(bcm, np.nan)
+        # probabilidad de nube (0–1) del clasificador bayesiano de NOAA
+        prob = leer_caja(ds, "Cloud_Probabilities", sy, sx) if "Cloud_Probabilities" in ds \
+            else np.full_like(bcm, np.nan)
         x_ref = ds["x"].values[sx]
     log(f"  caja {bcm.shape[0]}×{bcm.shape[1]} píxeles, lon_sat {lon_sat}")
 
@@ -271,7 +274,9 @@ def procesar_cuadro(goes: GOES, t: datetime, f_acm: str, region=REGION):
     nube = valido & (bcm >= 1)
     cod = np.zeros(lat.shape, np.uint8)
     cod[valido & ~nube] = 1
-    cod[valido & ~nube & (acm == 1)] = 2
+    # "probablemente despejado" solo cuando la probabilidad de nube es dudosa (bruma, cirro tenue)
+    # De noche NOAA etiqueta casi todo lo despejado como ACM=1, así que no se usa esa categoría.
+    cod[valido & ~nube & (prob >= PROB_DUDOSA)] = 2
     h = np.where(np.isfinite(altura) & (altura > 0), altura, 4000.0)
     cod[nube & (h < H_BAJA)] = 3
     cod[nube & (h >= H_BAJA) & (h <= H_ALTA)] = 4

@@ -163,7 +163,7 @@ body.modo-rojo #rojo{display:block}
 const ESTILO = {
   0:{n:"Sin dato",          c:[0,0,0,0]},
   1:{n:"Despejado",         c:[0,0,0,0]},
-  2:{n:"Probablemente despejado", c:[227,184,92,38]},
+  2:{n:"Despejado dudoso (bruma o cirro tenue)", c:[227,184,92,60]},
   3:{n:"Nube baja",         c:[150,158,176,190]},
   4:{n:"Nube media",        c:[214,219,230,205]},
   5:{n:"Nube alta (cirro, yunque)", c:[150,200,255,190]},
@@ -464,7 +464,7 @@ function analizarSitio() {
   const edadMin = Math.round((Date.now() - t) / 60000);
   if (edadMin > 45) alertas.push(`<div class="alerta">Esta imagen es de hace ${edadMin >= 90 ? (edadMin/60).toFixed(1).replace(".", ",") + " h" : edadMin + " min"}: el cielo puede haber cambiado desde entonces.</div>`);
   if (a.tipos[6]) alertas.push(`<div class="alerta niebla">El canal de 3,9 µm indica niebla o estrato bajo nocturno. El infrarrojo normal no lo ve y la máscara lo daba como despejado.</div>`);
-  if (a.prob > .3) alertas.push(`<div class="alerta">Más del 30 % del radio es "probablemente despejado": puede haber bruma o cirro muy tenue. Mala transparencia.</div>`);
+  if (a.prob > .3) alertas.push(`<div class="alerta">En más del 30 % del radio la probabilidad de nube es dudosa (35–50 %): puede haber bruma o cirro tenue. Transparencia probablemente mala.</div>`);
   if (sol > -12 && sol < 0) alertas.push(`<div class="alerta">Crepúsculo (sol a ${sol.toFixed(0)}°): el test de niebla no es fiable hasta que el sol baje de −5°.</div>`);
   const m = estado.modelo;
   if (m && m.current && v === "DESPEJADO" && m.current.cloud_cover_high > 60)

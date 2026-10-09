@@ -19,7 +19,7 @@ GitHub Actions (cada 15 min)                    App (navegador)
   └─ rejilla 0.02° → data/f/*.bin.gz  ──Pages──▶  └─ modo rojo, sitios guardados, offline
 ```
 
-Códigos de la rejilla: 0 sin dato · 1 despejado · 2 probablemente despejado · 3 nube baja
+Códigos de la rejilla: 0 sin dato · 1 despejado · 2 despejado dudoso (prob. de nube 0.35–0.5) · 3 nube baja
 (<2.5 km) · 4 media · 5 alta (>6 km) · 6 niebla/estrato nocturno.
 
 El histórico (~4 h) no se guarda en git: cada ejecución lo recupera del sitio publicado.
