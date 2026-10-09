@@ -2,7 +2,7 @@ name: Mapa de nubes
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"   # fuera de los minutos punta; GitHub puede retrasarlo
+    - cron: "7,22,37,52 * * * *"   # horario
   workflow_dispatch:
   push:
     branches: [main]
