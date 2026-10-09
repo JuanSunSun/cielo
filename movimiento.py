@@ -204,6 +204,15 @@ def resumen_global(vs):
     return out
 
 
+def _marcar_coherencia(vs, vs_previo, tol=8.0):
+    """Añade k=1 a los vectores que coinciden (< tol km/h) con el medido en la pareja anterior."""
+    previo = {(x["lat"], x["lon"]): x for x in vs_previo}
+    for x in vs:
+        o = previo.get((x["lat"], x["lon"]))
+        x["k"] = 1 if o is not None and math.hypot(x["u"] - o["u"], x["v"] - o["v"]) < tol else 0
+    return vs
+
+
 def campo_movimiento(orden, dir_data, filas, cols, region, log=print):
     """orden: lista de cuadros {t,f} ordenada; devuelve el dict para latest.json o None."""
     pareja = elegir_pareja(orden)
@@ -214,7 +223,17 @@ def campo_movimiento(orden, dir_data, filas, cols, region, log=print):
     a = _leer(os.path.join(dir_data, ca["f"]), filas, cols)
     b = _leer(os.path.join(dir_data, cb["f"]), filas, cols)
     vs = campo_desde_cuadros(a, b, dt, region)
+    # coherencia temporal: ¿el movimiento de la pareja anterior (ca respecto a ~30 min antes) coincide?
+    previa = elegir_pareja(orden[:orden.index(ca) + 1]) if ca in orden else None
+    if previa:
+        cc, _, dt2 = previa
+        c = _leer(os.path.join(dir_data, cc["f"]), filas, cols)
+        _marcar_coherencia(vs, campo_desde_cuadros(c, a, dt2, region))
+    else:
+        for x in vs:
+            x["k"] = 0
     glob = resumen_global(vs)
-    log(f"  movimiento: {len(vs)} vectores entre {ca['t']} y {cb['t']} (Δt {dt:.0f} min)"
+    log(f"  movimiento: {len(vs)} vectores entre {ca['t']} y {cb['t']} (Δt {dt:.0f} min), "
+        f"{sum(x['k'] for x in vs)} coherentes con la pareja anterior"
         + (f", mediana u={glob['u']} v={glob['v']} km/h" if glob else ""))
     return {"t0": ca["t"], "t1": cb["t"], "dt_min": round(dt, 1), "vectores": vs, "global": glob}

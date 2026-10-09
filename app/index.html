@@ -377,7 +377,7 @@ function vectorLocal(lat, lon) {
   const cand = [];
   for (const x of M.vectores) {
     const d = Math.hypot((x.lat - lat) * 110.57, (x.lon - lon) * kx);
-    if (d <= 450) cand.push({u:x.u, v:x.v, w:x.c / (1 + (d / 200) ** 2)});
+    if (d <= 450) cand.push({u:x.u, v:x.v, k:x.k ? 1 : 0, w:x.c / (1 + (d / 200) ** 2)});
   }
   const mediana = (arr, k) => {
     const a = arr.slice().sort((p, q) => p[k] - q[k]), tot = a.reduce((s, x) => s + x.w, 0);
@@ -389,7 +389,9 @@ function vectorLocal(lat, lon) {
   }
   const u = mediana(cand, "u"), v = mediana(cand, "v");
   const dev = cand.map(x => ({d:Math.hypot(x.u - u, x.v - v), w:x.w}));
-  return {u, v, dispersion:mediana(dev, "d"), fuente:"local"};
+  const tot = cand.reduce((s, x) => s + x.w, 0);
+  const coherencia = cand.reduce((s, x) => s + x.k * x.w, 0) / (tot || 1);
+  return {u, v, dispersion:mediana(dev, "d"), coherencia, fuente:"local"};
 }
 const HORIZONTE_MIN = 210, PASO_MIN = 15, FIABLE_MIN = 120;
 
@@ -409,7 +411,10 @@ function pronostico(lat, lon, radio) {
     pasos.push({min:m, t:new Date(t0.getTime() + m * 60000), frac:a ? a.frac : null, la, lo, rEf, dist});
   }
   const destino = (Math.atan2(mv.u, mv.v) * 180 / Math.PI + 360) % 360;
-  return {mv, vel, pasos, t0, destino, origen:(destino + 180) % 360, estacionaria:vel < 5};
+  // En pruebas con datos reales solo se acertaba con razonable frecuencia cuando las nubes se movían
+  // más de ~10 km/h y el movimiento se repetía en la pareja de imágenes anterior.
+  const fiable = vel >= 10 && mv.coherencia != null && mv.coherencia >= .6 && (mv.dispersion == null || mv.dispersion <= 12);
+  return {mv, vel, pasos, t0, destino, origen:(destino + 180) % 360, estacionaria:vel < 5, fiable};
 }
 
 // Primer instante (interpolado) en que la serie cruza un umbral hacia arriba o hacia abajo.
@@ -464,13 +469,15 @@ function bloquePronostico(P, radio) {
   const dir = P.estacionaria ? "Casi sin movimiento"
     : `Las nubes van hacia el ${rumboTxt(P.destino)} a ${P.vel.toFixed(0)} km/h (vienen del ${rumboTxt(P.origen)})`;
   const calidad = P.mv.dispersion == null ? "Estimación regional: poca nube cerca"
-    : P.mv.dispersion > 15 ? "Movimiento incierto: los vectores vecinos discrepan" : "Movimiento coherente";
+    : !P.fiable ? "Fiabilidad baja: movimiento lento o poco repetido entre imágenes"
+    : "Fiabilidad media: movimiento estable entre imágenes";
   return `<h3>Próximas horas</h3>
-    ${R ? `<div class="alerta ${R.tono === "bien" ? "bien" : R.tono === "info" ? "info" : ""}">${R.txt}</div>` : ""}
+    ${R ? `<div class="alerta ${R.tono === "bien" ? "bien" : R.tono === "info" ? "info" : ""}">${P.fiable || P.estacionaria ? "" : "<strong>Orientativo.</strong> "}${R.txt}</div>` : ""}
     <div class="barras" style="height:56px" aria-label="Nubosidad prevista en el radio, cada 15 minutos">${barras}</div>
     <div class="barras-et num">${et}</div>
-    <p class="nota">${dir}. ${calidad}.<br>Extrapolación de la imagen de las ${horaLocal(P.t0)}; fiable hasta ~2 h.
-      No prevé nubes que se formen o se disipen, ni las ligadas a la montaña.</p>`;
+    <p class="nota">${dir}. ${calidad}.<br>Extrapolación de la imagen de las ${horaLocal(P.t0)}; útil hasta ~2 h.
+      No prevé nubes que se formen o se disipen, ni las ligadas a la montaña.<br>
+      Pruebas preliminares con datos reales (3 h): con nubes que se mueven de forma estable avisa de ~6 de cada 10 llegadas, pero ~2 de cada 3 avisos no se cumplen. Tómalo como alerta temprana, no como previsión.</p>`;
 }
 
 // Flecha y áreas aguas arriba en el mapa

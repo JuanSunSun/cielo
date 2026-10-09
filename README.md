@@ -56,3 +56,23 @@ de la distancia recorrida) cada 15 min hasta 3,5 h y resume cuándo entran o se 
 no prevé nubes que se formen o se disipen, ni las ligadas al relieve. Fiable hasta ~2 h.
 
 Prueba del módulo: `python tests/test_movimiento.py`.
+
+### Cuánto se puede fiar (pruebas retrospectivas con GOES-19 real)
+
+`python tests/hindcast.py DIR` repite el pronóstico sobre cuadros ya publicados y lo compara con lo que ocurrió
+(DIR = carpeta con `latest.json` y `f/`; el flujo «Diagnóstico» los copia a la rama `diag-out`).
+Primera medición, 3 h de datos del 9-oct-2026 a mediodía, Chile completo, fracción de nube en ~20 km:
+
+| Horizonte | Error de la fracción: «no cambia» → advección | Punto despejado que pasa a nublado: detectado / falsas alarmas |
+|---|---|---|
+| +30 min | 7,3 % → 6,7 % | 25 % / 67 % |
+| +60 min | 11,2 % → 10,5 % | 27 % / 63 % |
+| +90 min | 13,9 % → 13,2 % | 25 % / 66 % |
+
+Con nubes que se mueven > 10 km/h y movimiento repetido entre parejas de imágenes sube a ~60 % detectado
+(con ~65 % de falsas alarmas, porque el aviso salta a partir del 25 % previsto). La mayor parte de la región
+(costa, cordillera) tiene nubes casi estacionarias o que cambian de forma, donde extrapolar apenas mejora.
+La app marca «Orientativo» cuando no se da esa condición.
+
+Pendiente para mejorar: seguir el movimiento con el infrarrojo (BT 11 µm) en vez de la máscara binaria,
+acumular semanas de verificación para calibrar probabilidades y mezclar con modelos numéricos más allá de 2 h.
