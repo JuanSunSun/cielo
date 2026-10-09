@@ -12,14 +12,13 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   generar:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.despliegue.outputs.page_url }}
@@ -48,3 +47,30 @@ jobs:
 
       - id: despliegue
         uses: actions/deploy-pages@v4
+
+  # Cadena propia: el horario de GitHub (schedule) no es fiable en este repo.
+  # Cada ejecución lanza la siguiente ~15 min después de haber empezado. Solo lo hace
+  # la ejecución más reciente, así nunca hay dos cadenas en paralelo. El schedule
+  # queda de respaldo para reiniciar la cadena si alguna vez se corta.
+  siguiente:
+    needs: generar
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+    steps:
+      - name: Esperar y lanzar la siguiente ejecución
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          inicio=$(gh api "repos/$GH_REPO/actions/runs/${{ github.run_id }}" --jq .run_started_at)
+          espera=$(( $(date -d "$inicio" +%s) + 15*60 - $(date +%s) ))
+          if [ "$espera" -gt 0 ]; then echo "Espero $espera s"; sleep "$espera"; fi
+          ultima=$(gh api "repos/$GH_REPO/actions/workflows/cielo.yml/runs?per_page=1" --jq '.workflow_runs[0].run_number')
+          if [ "$ultima" = "${{ github.run_number }}" ]; then
+            gh workflow run cielo.yml --ref main && echo "Siguiente ejecución lanzada"
+          else
+            echo "Ya hay una ejecución más reciente (#$ultima); esta cadena termina aquí"
+          fi
