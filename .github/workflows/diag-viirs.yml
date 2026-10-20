@@ -1,0 +1,44 @@
+name: Diagnóstico VIIRS
+# Comprueba qué datos VIIRS hay en los buckets públicos de NOAA (sin cuenta). Se lanza a mano.
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install s3fs
+      - run: |
+          cat > v.py <<'PY'
+          import s3fs, datetime as dt
+          fs = s3fs.S3FileSystem(anon=True)
+          out = []
+          hoy = dt.datetime.utcnow()
+          for b in ["noaa-nesdis-n20-pds", "noaa-nesdis-n21-pds", "noaa-nesdis-snpp-pds"]:
+              out.append(f"== {b}")
+              try:
+                  top = fs.ls(b)
+                  out += ["  " + t for t in top[:80]]
+                  for t in top:
+                      if any(k in t for k in ("Cloud", "CLD", "JRR", "IMG", "DNB", "SVI", "VIIRS")):
+                          y = f"{t}/{hoy:%Y}/{hoy:%m}/{(hoy - dt.timedelta(days=1)):%d}"
+                          try:
+                              ls = fs.ls(y)
+                              out.append(f"  -- {y}: {len(ls)} entradas, p.ej.:")
+                              out += ["      " + x for x in ls[:6]]
+                          except Exception as e:
+                              out.append(f"  -- {y}: {type(e).__name__}")
+              except Exception as e:
+                  out.append(f"  ERROR {type(e).__name__}: {str(e)[:200]}")
+          open("viirs.txt", "w").write("\n".join(out))
+          print("\n".join(out))
+          PY
+          python v.py
+      - run: |
+          git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
+          git checkout --orphan diag-out
+          git rm -rfq --cached .
+          git add -f viirs.txt
+          git commit -qm "viirs"
+          git push -f origin diag-out
