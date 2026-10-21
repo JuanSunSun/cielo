@@ -1,5 +1,5 @@
 name: Diagnóstico VIIRS
-# Comprueba qué datos VIIRS hay en los buckets públicos de NOAA (sin cuenta). Se lanza a mano.
+# Baja un fragmento VIIRS de NOAA-20 sobre Puerto Varas y describe su formato (sin cuenta). Se lanza a mano.
 on: workflow_dispatch
 permissions:
   contents: write
@@ -8,37 +8,60 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: pip install s3fs
+      - run: pip install s3fs h5py numpy
       - run: |
           cat > v.py <<'PY'
-          import s3fs, datetime as dt
+          import s3fs, h5py, numpy as np
           fs = s3fs.S3FileSystem(anon=True)
+          B, D = "noaa-nesdis-n20-pds", "2026/10/20"
+          LAT, LON = -41.319, -72.985
           out = []
-          hoy = dt.datetime.utcnow()
-          for b in ["noaa-nesdis-n20-pds", "noaa-nesdis-n21-pds", "noaa-nesdis-snpp-pds"]:
-              out.append(f"== {b}")
-              try:
-                  top = fs.ls(b)
-                  out += ["  " + t for t in top[:80]]
-                  for t in top:
-                      if any(k in t for k in ("Cloud", "CLD", "JRR", "IMG", "DNB", "SVI", "VIIRS")):
-                          y = f"{t}/{hoy:%Y}/{hoy:%m}/{(hoy - dt.timedelta(days=1)):%d}"
-                          try:
-                              ls = fs.ls(y)
-                              out.append(f"  -- {y}: {len(ls)} entradas, p.ej.:")
-                              out += ["      " + x for x in ls[:6]]
-                          except Exception as e:
-                              out.append(f"  -- {y}: {type(e).__name__}")
-              except Exception as e:
-                  out.append(f"  ERROR {type(e).__name__}: {str(e)[:200]}")
-          open("viirs.txt", "w").write("\n".join(out))
-          print("\n".join(out))
+          def P(*a): out.append(" ".join(str(x) for x in a)); print(out[-1], flush=True)
+          cm = [p for p in fs.ls(f"{B}/VIIRS-JRR-CloudMask/{D}")]
+          cand = []
+          for p in cm:
+              n = p.split("/")[-1]; s = n.split("_s")[1][:15]
+              if "0530" <= s[8:12] <= "0730": cand.append((p, s))
+          P("fragmentos de CloudMask entre 05:30 y 07:30 UTC:", len(cand))
+          hallado = None
+          for p, s in cand:
+              with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
+                  if hallado is None and "Latitude" in h:
+                      la = h["Latitude"][::40, ::160]; lo = h["Longitude"][::40, ::160]
+                      if np.nanmin(la) <= LAT <= np.nanmax(la) and np.nanmin(lo) <= LON <= np.nanmax(lo):
+                          hallado = (p, s)
+                          break
+          if not hallado:
+              P("ningún fragmento cubre el sitio en esa ventana"); 
+          else:
+              p, s = hallado; P("fragmento:", p, "tamaño", fs.size(p) // 1024, "KB")
+              with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
+                  P("variables:")
+                  for k in h.keys():
+                      d = h[k]
+                      if hasattr(d, "shape"): P("  ", k, d.shape, d.dtype)
+                  la, lo = h["Latitude"][:], h["Longitude"][:]
+                  d2 = (la - LAT) ** 2 + ((lo - LON) * np.cos(np.radians(LAT))) ** 2
+                  i, j = np.unravel_index(np.nanargmin(d2), d2.shape)
+                  P("píxel más cercano", (i, j), "dist ≈", round(float(np.sqrt(d2[i, j]) * 111.2), 2), "km", "lat/lon", la[i, j], lo[i, j])
+                  for k in ("CloudMask", "CloudProbability", "QCFlags"):
+                      if k in h:
+                          d = h[k]; P(k, "atributos:", {a: (d.attrs[a].tolist() if hasattr(d.attrs[a], "tolist") else d.attrs[a]) for a in d.attrs if a in ("flag_values", "flag_meanings", "long_name", "units", "_FillValue")})
+                          P(k, "entorno 7x7 del sitio:\n", h[k][max(i - 3, 0):i + 4, max(j - 3, 0):j + 4])
+              t = s[8:15]
+              for prod, pref in (("VIIRS-I5-SDR", "SVI05"), ("VIIRS-I4-SDR", "SVI04"), ("VIIRS-IMG-GEO-TC", "GITCO"), ("VIIRS-NCC-EDR", "")):
+                  try:
+                      m = [q for q in fs.ls(f"{B}/{prod}/{D}") if f"_t{t}_" in q or f"_s{s}" in q]
+                      P(prod, [ (q.split('/')[-1], fs.size(q) // 1024) for q in m ], "(KB)")
+                  except Exception as e:
+                      P(prod, "ERROR", type(e).__name__)
+          open("viirs2.txt", "w").write("\n".join(out))
           PY
           python v.py
       - run: |
           git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
           git checkout --orphan diag-out
           git rm -rfq --cached .
-          git add -f viirs.txt
-          git commit -qm "viirs"
+          git add -f viirs2.txt
+          git commit -qm "viirs2"
           git push -f origin diag-out
