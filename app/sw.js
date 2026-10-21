@@ -1,6 +1,6 @@
 // Service worker de Cielo: la app funciona sin red con los últimos datos vistos.
-const VERSION = "cielo-v5";
-const BASE = ["./", "index.html", "manifest.webmanifest", "icono-192.png", "icono-512.png", "icono-180.png"];
+const VERSION = "cielo-v6";
+const BASE = ["./", "index.html", "luna.html", "manifest.webmanifest", "icono-192.png", "icono-512.png", "icono-180.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(BASE)).then(() => self.skipWaiting()));

@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c1118">
+<link rel="apple-touch-icon" href="icono-180.png">
+<link rel="icon" href="icono-192.png">
+<title>Factor Astrofoto</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<script>
+/*
+ (c) 2011-2015, Vladimir Agafonkin
+ SunCalc is a JavaScript library for calculating sun/moon position and light phases.
+ https://github.com/mourner/suncalc
+*/
+
+(function () { 'use strict';
+
+// shortcuts for easier to read formulas
+
+var PI   = Math.PI,
+    sin  = Math.sin,
+    cos  = Math.cos,
+    tan  = Math.tan,
+    asin = Math.asin,
+    atan = Math.atan2,
+    acos = Math.acos,
+    rad  = PI / 180;
+
+// sun calculations are based on http://aa.quae.nl/en/reken/zonpositie.html formulas
+
+
+// date/time constants and conversions
+
+var dayMs = 1000 * 60 * 60 * 24,
+    J1970 = 2440588,
+    J2000 = 2451545;
+
+function toJulian(date) { return date.valueOf() / dayMs - 0.5 + J1970; }
+function fromJulian(j)  { return new Date((j + 0.5 - J1970) * dayMs); }
+function toDays(date)   { return toJulian(date) - J2000; }
+
+
+// general calculations for position
+
+var e = rad * 23.4397; // obliquity of the Earth
+
+function rightAscension(l, b) { return atan(sin(l) * cos(e) - tan(b) * sin(e), cos(l)); }
+function declination(l, b)    { return asin(sin(b) * cos(e) + cos(b) * sin(e) * sin(l)); }
+
+function azimuth(H, phi, dec)  { return atan(sin(H), cos(H) * sin(phi) - tan(dec) * cos(phi)); }
+function altitude(H, phi, dec) { return asin(sin(phi) * sin(dec) + cos(phi) * cos(dec) * cos(H)); }
+
+function siderealTime(d, lw) { return rad * (280.16 + 360.9856235 * d) - lw; }
+
+function astroRefraction(h) {
+    if (h < 0) // the following formula works for positive altitudes only.
+        h = 0; // if h = -0.08901179 a div/0 would occur.
+
+    // formula 16.4 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
+    // 1.02 / tan(h + 10.26 / (h + 5.10)) h in degrees, result in arc minutes -> converted to rad:
+    return 0.0002967 / Math.tan(h + 0.00312536 / (h + 0.08901179));
+}
+
+// general sun calculations
+
+function solarMeanAnomaly(d) { return rad * (357.5291 + 0.98560028 * d); }
+
+function eclipticLongitude(M) {
+
+    var C = rad * (1.9148 * sin(M) + 0.02 * sin(2 * M) + 0.0003 * sin(3 * M)), // equation of center
+        P = rad * 102.9372; // perihelion of the Earth
+
+    return M + C + P + PI;
+}
+
+function sunCoords(d) {
+
+    var M = solarMeanAnomaly(d),
+        L = eclipticLongitude(M);
+
+    return {
+        dec: declination(L, 0),
+        ra: rightAscension(L, 0)
+    };
+}
+
+
+var SunCalc = {};
+
+
+// calculates sun position for a given date and latitude/longitude
+
+SunCalc.getPosition = function (date, lat, lng) {
+
+    var lw  = rad * -lng,
+        phi = rad * lat,
+        d   = toDays(date),
+
+        c  = sunCoords(d),
+        H  = siderealTime(d, lw) - c.ra;
+
+    return {
+        azimuth: azimuth(H, phi, c.dec),
+        altitude: altitude(H, phi, c.dec)
+    };
+};
+
+
+// sun times configuration (angle, morning name, evening name)
+
+var times = SunCalc.times = [
+    [-0.833, 'sunrise',       'sunset'      ],
+    [  -0.3, 'sunriseEnd',    'sunsetStart' ],
+    [    -6, 'dawn',          'dusk'        ],
+    [   -12, 'nauticalDawn',  'nauticalDusk'],
+    [   -18, 'nightEnd',      'night'       ],
+    [     6, 'goldenHourEnd', 'goldenHour'  ]
+];
+
+// adds a custom time to the times config
+
+SunCalc.addTime = function (angle, riseName, setName) {
+    times.push([angle, riseName, setName]);
+};
+
+
+// calculations for sun times
+
+var J0 = 0.0009;
+
+function julianCycle(d, lw) { return Math.round(d - J0 - lw / (2 * PI)); }
+
+function approxTransit(Ht, lw, n) { return J0 + (Ht + lw) / (2 * PI) + n; }
+function solarTransitJ(ds, M, L)  { return J2000 + ds + 0.0053 * sin(M) - 0.0069 * sin(2 * L); }
+
+function hourAngle(h, phi, d) { return acos((sin(h) - sin(phi) * sin(d)) / (cos(phi) * cos(d))); }
+function observerAngle(height) { return -2.076 * Math.sqrt(height) / 60; }
+
+// returns set time for the given sun altitude
+function getSetJ(h, lw, phi, dec, n, M, L) {
+
+    var w = hourAngle(h, phi, dec),
+        a = approxTransit(w, lw, n);
+    return solarTransitJ(a, M, L);
+}
+
+
+// calculates sun times for a given date, latitude/longitude, and, optionally,
+// the observer height (in meters) relative to the horizon
+
+SunCalc.getTimes = function (date, lat, lng, height) {
+
+    height = height || 0;
+
+    var lw = rad * -lng,
+        phi = rad * lat,
+
+        dh = observerAngle(height),
+
+        d = toDays(date),
+        n = julianCycle(d, lw),
+        ds = approxTransit(0, lw, n),
+
+        M = solarMeanAnomaly(ds),
+        L = eclipticLongitude(M),
+        dec = declination(L, 0),
+
+        Jnoon = solarTransitJ(ds, M, L),
+
+        i, len, time, h0, Jset, Jrise;
+
+
+    var result = {
+        solarNoon: fromJulian(Jnoon),
+        nadir: fromJulian(Jnoon - 0.5)
+    };
+
+    for (i = 0, len = times.length; i < len; i += 1) {
+        time = times[i];
+        h0 = (time[0] + dh) * rad;
+
+        Jset = getSetJ(h0, lw, phi, dec, n, M, L);
+        Jrise = Jnoon - (Jset - Jnoon);
+
+        result[time[1]] = fromJulian(Jrise);
+        result[time[2]] = fromJulian(Jset);
+    }
+
+    return result;
+};
+
+
+// moon calculations, based on http://aa.quae.nl/en/reken/hemelpositie.html formulas
+
+function moonCoords(d) { // geocentric ecliptic coordinates of the moon
+
+    var L = rad * (218.316 + 13.176396 * d), // ecliptic longitude
+        M = rad * (134.963 + 13.064993 * d), // mean anomaly
+        F = rad * (93.272 + 13.229350 * d),  // mean distance
+
+        l  = L + rad * 6.289 * sin(M), // longitude
+        b  = rad * 5.128 * sin(F),     // latitude
+        dt = 385001 - 20905 * cos(M);  // distance to the moon in km
+
+    return {
+        ra: rightAscension(l, b),
+        dec: declination(l, b),
+        dist: dt
+    };
+}
+
+SunCalc.getMoonPosition = function (date, lat, lng) {
+
+    var lw  = rad * -lng,
+        phi = rad * lat,
+        d   = toDays(date),
+
+        c = moonCoords(d),
+        H = siderealTime(d, lw) - c.ra,
+        h = altitude(H, phi, c.dec),
+        // formula 14.1 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
+        pa = atan(sin(H), tan(phi) * cos(c.dec) - sin(c.dec) * cos(H));
+
+    h = h + astroRefraction(h); // altitude correction for refraction
+
+    return {
+        azimuth: azimuth(H, phi, c.dec),
+        altitude: h,
+        distance: c.dist,
+        parallacticAngle: pa
+    };
+};
+
+
+// calculations for illumination parameters of the moon,
+// based on http://idlastro.gsfc.nasa.gov/ftp/pro/astro/mphase.pro formulas and
+// Chapter 48 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
+
+SunCalc.getMoonIllumination = function (date) {
+
+    var d = toDays(date || new Date()),
+        s = sunCoords(d),
+        m = moonCoords(d),
+
+        sdist = 149598000, // distance from Earth to Sun in km
+
+        phi = acos(sin(s.dec) * sin(m.dec) + cos(s.dec) * cos(m.dec) * cos(s.ra - m.ra)),
+        inc = atan(sdist * sin(phi), m.dist - sdist * cos(phi)),
+        angle = atan(cos(s.dec) * sin(s.ra - m.ra), sin(s.dec) * cos(m.dec) -
+                cos(s.dec) * sin(m.dec) * cos(s.ra - m.ra));
+
+    return {
+        fraction: (1 + cos(inc)) / 2,
+        phase: 0.5 + 0.5 * inc * (angle < 0 ? -1 : 1) / Math.PI,
+        angle: angle
+    };
+};
+
+
+function hoursLater(date, h) {
+    return new Date(date.valueOf() + h * dayMs / 24);
+}
+
+// calculations for moon rise/set times are based on http://www.stargazing.net/kepler/moonrise.html article
+
+SunCalc.getMoonTimes = function (date, lat, lng, inUTC) {
+    var t = new Date(date);
+    if (inUTC) t.setUTCHours(0, 0, 0, 0);
+    else t.setHours(0, 0, 0, 0);
+
+    var hc = 0.133 * rad,
+        h0 = SunCalc.getMoonPosition(t, lat, lng).altitude - hc,
+        h1, h2, rise, set, a, b, xe, ye, d, roots, x1, x2, dx;
+
+    // go in 2-hour chunks, each time seeing if a 3-point quadratic curve crosses zero (which means rise or set)
+    for (var i = 1; i <= 24; i += 2) {
+        h1 = SunCalc.getMoonPosition(hoursLater(t, i), lat, lng).altitude - hc;
+        h2 = SunCalc.getMoonPosition(hoursLater(t, i + 1), lat, lng).altitude - hc;
+
+        a = (h0 + h2) / 2 - h1;
+        b = (h2 - h0) / 2;
+        xe = -b / (2 * a);
+        ye = (a * xe + b) * xe + h1;
+        d = b * b - 4 * a * h1;
+        roots = 0;
+
+        if (d >= 0) {
+            dx = Math.sqrt(d) / (Math.abs(a) * 2);
+            x1 = xe - dx;
+            x2 = xe + dx;
+            if (Math.abs(x1) <= 1) roots++;
+            if (Math.abs(x2) <= 1) roots++;
+            if (x1 < -1) x1 = x2;
+        }
+
+        if (roots === 1) {
+            if (h0 < 0) rise = i + x1;
+            else set = i + x1;
+
+        } else if (roots === 2) {
+            rise = i + (ye < 0 ? x2 : x1);
+            set = i + (ye < 0 ? x1 : x2);
+        }
+
+        if (rise && set) break;
+
+        h0 = h2;
+    }
+
+    var result = {};
+
+    if (rise) result.rise = hoursLater(t, rise);
+    if (set) result.set = hoursLater(t, set);
+
+    if (!rise && !set) result[ye > 0 ? 'alwaysUp' : 'alwaysDown'] = true;
+
+    return result;
+};
+
+
+// export as Node module / AMD module / browser variable
+if (typeof exports === 'object' && typeof module !== 'undefined') module.exports = SunCalc;
+else if (typeof define === 'function' && define.amd) define(SunCalc);
+else window.SunCalc = SunCalc;
+
+}());
+
+</script>
+<style>
+/* Layout: lectura grande del momento arriba, la noche como gráfico que se arrastra, tabla de 14 noches debajo. Oscuro primero, acento rojo ámbar para no estropear la visión nocturna. */
+:root {
+  --bg: #0c1118;
+  --surface: #131b25;
+  --line: #243142;
+  --fg: #dfe6ee;
+  --muted: #8796a8;
+  --accent: #ff7a59;
+  --accent-soft: rgba(255,122,89,.22);
+  --sun: #e7b84a;
+  --moon: #9ec5f0;
+  --good: #5fc48a;
+  --warn: #e7b84a;
+  --bad: #ff6b5b;
+  --f-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+html { background: var(--bg); }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #eef1f5; --surface: #fbfcfd; --line: #d3dae3; --fg: #18212c; --muted: #5d6b7c;
+    --accent: #c4401f; --accent-soft: rgba(196,64,31,.16); --sun: #a87a10; --moon: #2f6bb3;
+    --good: #1f8a54; --warn: #a87a10; --bad: #c4301f; color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #eef1f5; --surface: #fbfcfd; --line: #d3dae3; --fg: #18212c; --muted: #5d6b7c;
+  --accent: #c4401f; --accent-soft: rgba(196,64,31,.16); --sun: #a87a10; --moon: #2f6bb3;
+  --good: #1f8a54; --warn: #a87a10; --bad: #c4301f; color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 15px; line-height: 1.5;
+  padding-block: 20px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 760px; margin: 0 auto; display: grid; gap: 22px; }
+h1, h2 { font-family: var(--f-display); text-wrap: balance; margin: 0; }
+h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -.01em; }
+h2 { font-size: 1.05rem; font-weight: 700; }
+.sub { color: var(--muted); margin: 4px 0 0; font-size: .9rem; }
+.label { font-family: var(--f-mono); font-size: .7rem; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+
+.now { display: grid; grid-template-columns: auto 1fr; gap: 6px 22px; align-items: center; }
+.big { font-family: var(--f-display); font-weight: 700; font-size: 4.6rem; line-height: .95; font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+.verdict { font-family: var(--f-display); font-weight: 700; font-size: 1.15rem; text-wrap: balance; }
+.verdict.good { color: var(--good); } .verdict.warn { color: var(--warn); } .verdict.bad { color: var(--bad); }
+.meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 10px; }
+.meter > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .25s; }
+.stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px 16px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.stats div { min-width: 0; }
+.stats b { display: block; font-family: var(--f-mono); font-weight: 500; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+
+.when { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.field { display: grid; gap: 4px; min-width: 0; }
+input { font: inherit; font-family: var(--f-mono); font-size: .9rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; width: 100%; min-width: 0; }
+input:focus-visible, button:focus-visible, .rowbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button { font: inherit; font-family: var(--f-mono); font-size: .85rem; color: var(--fg); background: transparent; border: 1px solid var(--accent); border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+button:hover { background: var(--accent-soft); }
+
+svg { display: block; width: 100%; height: auto; touch-action: pan-y; cursor: ew-resize; user-select: none; }
+.ax { fill: var(--muted); font-family: var(--f-mono); font-size: 10px; }
+.grid { stroke: var(--line); stroke-width: 1; }
+.thr { stroke: var(--muted); stroke-dasharray: 4 4; stroke-width: 1; }
+.area { fill: var(--accent-soft); } .top { fill: none; stroke: var(--accent); stroke-width: 2; }
+.lm { fill: none; stroke: var(--moon); stroke-width: 2; } .ls { fill: none; stroke: var(--sun); stroke-width: 2; stroke-dasharray: 5 3; }
+.cur { stroke: var(--fg); stroke-width: 1; } .dot { fill: var(--fg); }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; font-family: var(--f-mono); font-size: .72rem; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 18px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: middle; }
+.legend .m::before { border-color: var(--moon); } .legend .s::before { border-color: var(--sun); border-top-style: dashed; }
+.charts { display: grid; gap: 14px; }
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 520px; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-family: var(--f-mono); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 400; padding: 0 8px 8px 0; }
+td { padding: 8px 8px 8px 0; border-top: 1px solid var(--line); font-size: .88rem; white-space: nowrap; }
+tr.sel td { background: var(--accent-soft); }
+.rowbtn { cursor: pointer; }
+.bar { width: 110px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+td.mono { font-family: var(--f-mono); font-size: .82rem; }
+
+details summary { cursor: pointer; font-family: var(--f-mono); font-size: .8rem; color: var(--muted); }
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
+.note { color: var(--muted); font-size: .82rem; margin: 0; max-width: 65ch; }
+@media (max-width: 480px) { .big { font-size: 3.6rem; } .now { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .meter > i { transition: none; } }
+</style>
+</head><body>
+<main>
+  <header>
+    <a href="./" class="label" style="text-decoration:none;color:var(--accent)">← Cielo</a>
+    <h1>Factor Astrofoto</h1>
+    <p class="sub">¿Merece la pena fotografiar el cielo esta noche? Depende de dónde estén el Sol y la Luna. Puerto Varas, hora de Chile.</p>
+  </header>
+
+  <section class="panel" aria-live="polite">
+    <div class="now">
+      <div class="big" id="big">–</div>
+      <div>
+        <div class="verdict" id="verdict">–</div>
+        <div class="meter"><i id="meter"></i></div>
+      </div>
+      <div class="stats" id="stats"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="when">
+      <div class="field"><label class="label" for="date">Fecha</label><input type="date" id="date"></div>
+      <div class="field"><label class="label" for="time">Hora</label><input type="time" id="time" step="600"></div>
+      <button type="button" id="nowbtn">Ahora</button>
+    </div>
+    <div class="charts" style="margin-top:14px">
+      <div><div class="label" style="margin-bottom:4px">Factor durante la noche · arrastra para moverte</div><svg id="c1" viewBox="0 0 640 170" role="img" aria-label="Factor durante la noche"></svg></div>
+      <div><div class="label" style="margin-bottom:4px">Altura del Sol y de la Luna (°)</div><svg id="c2" viewBox="0 0 640 150" role="img" aria-label="Altura del Sol y de la Luna"></svg>
+        <div class="legend"><span class="m">Luna</span><span class="s">Sol</span></div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Próximas 14 noches</h2>
+    <p class="note" style="margin:4px 0 12px">Ventana más larga con factor sobre el umbral, entre las 18:00 y las 09:00. Toca una noche para verla en el gráfico.</p>
+    <div class="tablewrap"><table><thead><tr><th>Noche</th><th>Luna a medianoche</th><th>Mejor ventana</th><th>Horas</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Ajustes del modelo</summary>
+      <div class="settings">
+        <div class="field"><label class="label" for="lat">Latitud</label><input type="number" id="lat" step="0.01" value="-41.32"></div>
+        <div class="field"><label class="label" for="lon">Longitud</label><input type="number" id="lon" step="0.01" value="-72.98"></div>
+        <div class="field"><label class="label" for="sqm">Cielo oscuro (mag/″²)</label><input type="number" id="sqm" step="0.1" value="21.3"></div>
+        <div class="field"><label class="label" for="talt">Altura objetivo (°)</label><input type="number" id="talt" step="1" min="5" max="90" value="90"></div>
+        <div class="field"><label class="label" for="taz">Acimut objetivo (°)</label><input type="number" id="taz" step="1" min="0" max="360" value="0"></div>
+        <div class="field"><label class="label" for="thr">Umbral de ventana</label><input type="number" id="thr" step="0.05" min="0.1" max="1" value="0.6"></div>
+      </div>
+      <p class="note" style="margin-top:12px">Factor = oscuridad del Sol × oscuridad por Luna. El brillo lunar usa el modelo de Krisciunas y Schaefer (1991, banda V). Cielo oscuro 21,3 es un valor típico: cámbialo por el que mida tu TESS-W. Acimut con 0 = norte y 90 = este; con altura 90 el acimut da igual. No incluye nubes ni refracción en la altura del Sol. Es una guía para decidir, no fotometría.</p>
+    </details>
+  </section>
+</main>
+
+<script>
+const TZ = 'America/Santiago', K_EXT = 0.172, R = Math.PI / 180;
+const $ = id => document.getElementById(id);
+const P = () => ({ lat: +$('lat').value, lon: +$('lon').value, sqm: +$('sqm').value, alt: +$('talt').value, az: +$('taz').value, thr: +$('thr').value });
+
+/* ---------- hora de Chile ---------- */
+const dtf = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function parts(ms) { const o = {}; dtf.formatToParts(new Date(ms)).forEach(x => o[x.type] = +x.value); return o; }
+function offMin(ms) { const p = parts(ms); return (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms) / 60000; }
+function localToUTC(y, m, d, h, mi) { const g = Date.UTC(y, m - 1, d, h, mi); let u = g - offMin(g) * 60000; return g - offMin(u) * 60000; }
+const two = n => String(n).padStart(2, '0');
+const hhmm = ms => { const p = parts(ms); return two(p.hour) + ':' + two(p.minute); };
+const dayLabel = (y, m, d) => new Intl.DateTimeFormat('es', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(y, m - 1, d, 12)));
+function nightOf(ms) { const p = parts(ms); const b = p.hour < 12 ? new Date(Date.UTC(p.year, p.month - 1, p.day - 1)) : new Date(Date.UTC(p.year, p.month - 1, p.day)); return { y: b.getUTCFullYear(), m: b.getUTCMonth() + 1, d: b.getUTCDate() }; }
+const nightStart = n => localToUTC(n.y, n.m, n.d, 18, 0);
+const nightEnd = n => localToUTC(n.y, n.m, n.d + 1, 9, 0);
+const nightKey = n => n.y + '-' + n.m + '-' + n.d;
+
+/* ---------- modelo ---------- */
+const airmass = z => { const s = Math.sin(Math.min(Math.max(z, 0), 89) * R); return Math.pow(1 - 0.96 * s * s, -0.5); };
+const nl = sqm => 34.08 * Math.exp(20.7233 - 0.92104 * sqm);
+const magOf = b => (20.7233 - Math.log(b / 34.08)) / 0.92104;
+function sep(a1, z1, a2, z2) { a1 *= R; a2 *= R; const c = Math.sin(a1) * Math.sin(a2) + Math.cos(a1) * Math.cos(a2) * Math.cos((z1 - z2) * R); return Math.acos(Math.max(-1, Math.min(1, c))) / R; }
+function evalAt(ms, p) {
+  const t = new Date(ms);
+  const hS = SunCalc.getPosition(t, p.lat, p.lon).altitude / R;
+  const mp = SunCalc.getMoonPosition(t, p.lat, p.lon);
+  const hL = mp.altitude / R, azL = (mp.azimuth / R + 180) % 360;
+  const fr = SunCalc.getMoonIllumination(t).fraction;
+  const alpha = Math.acos(Math.max(-1, Math.min(1, 2 * fr - 1))) / R;
+  const rho = sep(hL, azL, p.alt, p.az), bO = nl(p.sqm);
+  let bL = 0;
+  if (hL > -1) {
+    const iS = Math.pow(10, -0.4 * (3.84 + 0.026 * alpha + 4e-9 * Math.pow(alpha, 4)));
+    const fR = Math.pow(10, 5.36) * (1.06 + Math.pow(Math.cos(rho * R), 2)) + Math.pow(10, 6.15 - rho / 40);
+    bL = fR * iS * Math.pow(10, -0.4 * K_EXT * airmass(90 - Math.max(hL, 0))) * (1 - Math.pow(10, -0.4 * K_EXT * airmass(90 - Math.max(p.alt, 0))));
+  }
+  const fL = bO / (bO + bL), fS = Math.pow(Math.min(1, Math.max(0, (-hS - 6) / 12)), 2);
+  return { ms, hS, hL, ill: fr * 100, rho, mag: magOf(bO + bL), dmag: 2.5 * Math.log10((bO + bL) / bO), fL, fS, f: fL * fS };
+}
+function verdict(f) {
+  if (f >= .85) return ['Excelente: banda ancha, objetos débiles', 'good'];
+  if (f >= .60) return ['Bueno: banda ancha con exposiciones más cortas, o banda estrecha', 'good'];
+  if (f >= .30) return ['Solo banda estrecha (Ha, OIII, SII) u objetos brillantes', 'warn'];
+  if (f > .05) return ['Poco recomendable: Luna, planetas o pruebas', 'bad'];
+  return ['No merece la pena', 'bad'];
+}
+
+/* ---------- estado ---------- */
+let sel = Date.now(), cache = { key: '', data: [] };
+const fmt1 = (v, d = 1) => v.toLocaleString('es', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+function setInputs() { const p = parts(sel); $('date').value = p.year + '-' + two(p.month) + '-' + two(p.day); $('time').value = two(p.hour) + ':' + two(p.minute); }
+function fromInputs() { const [y, m, d] = $('date').value.split('-').map(Number), [h, mi] = $('time').value.split(':').map(Number); if (y) sel = localToUTC(y, m, d, h || 0, mi || 0); }
+
+function series(n, p) {
+  const key = nightKey(n) + JSON.stringify(p); if (cache.key === key) return cache.data;
+  const t0 = nightStart(n), t1 = nightEnd(n), out = [];
+  for (let t = t0; t <= t1; t += 600000) out.push(evalAt(t, p));
+  cache = { key, data: out }; return out;
+}
+
+function renderNow(p) {
+  const r = evalAt(sel, p), v = verdict(r.f);
+  $('big').textContent = fmt1(r.f, 2);
+  $('verdict').textContent = v[0]; $('verdict').className = 'verdict ' + v[1];
+  $('meter').style.width = (r.f * 100) + '%';
+  const s = [['Sol', fmt1(r.hS) + '°'], ['Luna', fmt1(r.hL) + '°'], ['Iluminada', fmt1(r.ill, 0) + ' %'], ['Distancia al objetivo', fmt1(r.rho, 0) + '°'],
+    ['Cielo', fmt1(r.mag, 2) + ' mag/″²'], ['La Luna lo aclara', fmt1(r.dmag, 2) + ' mag']];
+  $('stats').innerHTML = s.map(x => `<div><span class="label">${x[0]}</span><b>${x[1]}</b></div>`).join('');
+}
+
+function renderCharts(p) {
+  const n = nightOf(sel), data = series(n, p), t0 = nightStart(n), t1 = nightEnd(n);
+  const W = 640, mL = 34, mR = 10, X = t => mL + (t - t0) / (t1 - t0) * (W - mL - mR);
+  const ticks = []; for (let k = 0; k <= 15; k += 3) ticks.push(t0 + k * 3600000);
+  const xt = (H) => ticks.map(t => `<line class="grid" x1="${X(t)}" x2="${X(t)}" y1="10" y2="${H - 22}"/><text class="ax" x="${X(t)}" y="${H - 6}" text-anchor="middle">${hhmm(t)}</text>`).join('');
+  const cur = (H) => { const c = Math.min(Math.max(sel, t0), t1); return `<line class="cur" x1="${X(c)}" x2="${X(c)}" y1="10" y2="${H - 22}"/>`; };
+  // gráfico 1
+  let H = 170, Y = f => 10 + (1 - f) * (H - 32);
+  let top = data.map((d, i) => (i ? 'L' : 'M') + X(d.ms).toFixed(1) + ' ' + Y(d.f).toFixed(1)).join(' ');
+  let g = [0, .5, 1].map(v => `<line class="grid" x1="${mL}" x2="${W - mR}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${mL - 6}" y="${Y(v) + 3}" text-anchor="end">${fmt1(v, 1)}</text>`).join('');
+  const dn = data.find(d => d.ms >= Math.min(Math.max(sel, t0), t1)) || data[0];
+  $('c1').innerHTML = g + xt(H) + `<path class="area" d="${top} L ${X(t1)} ${Y(0)} L ${X(t0)} ${Y(0)} Z"/><path class="top" d="${top}"/><line class="thr" x1="${mL}" x2="${W - mR}" y1="${Y(p.thr)}" y2="${Y(p.thr)}"/>` + cur(H) + `<circle class="dot" cx="${X(dn.ms)}" cy="${Y(dn.f)}" r="4"/>`;
+  // gráfico 2
+  H = 150; const Y2 = a => 10 + (60 - Math.max(-60, Math.min(60, a))) / 120 * (H - 32);
+  const path = k => data.map((d, i) => (i ? 'L' : 'M') + X(d.ms).toFixed(1) + ' ' + Y2(d[k]).toFixed(1)).join(' ');
+  g = [60, 0, -18, -60].map(v => `<line class="${v === 0 ? 'thr' : 'grid'}" x1="${mL}" x2="${W - mR}" y1="${Y2(v)}" y2="${Y2(v)}"/><text class="ax" x="${mL - 6}" y="${Y2(v) + 3}" text-anchor="end">${v}</text>`).join('');
+  $('c2').innerHTML = g + xt(H) + `<path class="ls" d="${path('hS')}"/><path class="lm" d="${path('hL')}"/>` + cur(H);
+}
+
+function renderRows(p) {
+  const today = nightOf(Date.now()), cur = nightKey(nightOf(sel)); let html = '';
+  for (let i = 0; i < 14; i++) {
+    const b = new Date(Date.UTC(today.y, today.m - 1, today.d + i)), n = { y: b.getUTCFullYear(), m: b.getUTCMonth() + 1, d: b.getUTCDate() };
+    const t0 = nightStart(n), s = []; for (let k = 0; k <= 30; k++) s.push(evalAt(t0 + k * 1800000, p));
+    let best = null, st = -1;
+    for (let k = 0; k <= s.length; k++) { const ok = k < s.length && s[k].f >= p.thr; if (ok && st < 0) st = k; if (!ok && st >= 0) { if (!best || k - st > best[1] - best[0]) best = [st, k]; st = -1; } }
+    const mid = evalAt(localToUTC(n.y, n.m, n.d + 1, 0, 0), p);
+    const hrs = best ? (best[1] - best[0]) / 2 : 0;
+    const win = best ? hhmm(s[best[0]].ms) + '–' + hhmm(s[best[1] - 1].ms + 1800000) : '—';
+    html += `<tr class="rowbtn ${nightKey(n) === cur ? 'sel' : ''}" tabindex="0" role="button" data-ms="${t0 + 5 * 3600000}"><td>${dayLabel(n.y, n.m, n.d)}</td><td class="mono">${fmt1(mid.ill, 0)} % · ${fmt1(mid.hL, 0)}°</td><td class="mono">${win}</td><td class="mono">${hrs ? fmt1(hrs) + ' h' : '—'}</td><td><div class="bar"><i style="width:${Math.min(hrs / 10, 1) * 100}%"></i></div></td></tr>`;
+  }
+  $('rows').innerHTML = html;
+}
+
+function update(full) {
+  const p = P(); if (![p.lat, p.lon, p.sqm, p.alt, p.az, p.thr].every(Number.isFinite)) return;
+  renderNow(p); renderCharts(p); if (full) renderRows(p);
+}
+
+/* ---------- eventos ---------- */
+['date', 'time'].forEach(id => $(id).addEventListener('input', () => { fromInputs(); update(true); }));
+['lat', 'lon', 'sqm', 'talt', 'taz', 'thr'].forEach(id => $(id).addEventListener('input', () => { try { localStorage.setItem('fa_' + id, $(id).value); } catch (e) {} update(true); }));
+$('nowbtn').addEventListener('click', () => { sel = Date.now(); setInputs(); update(true); });
+$('rows').addEventListener('click', e => { const tr = e.target.closest('tr'); if (tr) { sel = +tr.dataset.ms; setInputs(); update(true); } });
+$('rows').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { const tr = e.target.closest('tr'); if (tr) { e.preventDefault(); sel = +tr.dataset.ms; setInputs(); update(true); } } });
+
+function scrub(e, svg) {
+  const n = nightOf(sel), t0 = nightStart(n), t1 = nightEnd(n), r = svg.getBoundingClientRect();
+  const vx = (e.clientX - r.left) / r.width * 640, f = Math.min(1, Math.max(0, (vx - 34) / (640 - 34 - 10)));
+  sel = Math.round((t0 + f * (t1 - t0)) / 600000) * 600000; setInputs(); update(false);
+}
+['c1', 'c2'].forEach(id => {
+  const svg = $(id); let down = false;
+  svg.addEventListener('pointerdown', e => { down = true; svg.setPointerCapture(e.pointerId); scrub(e, svg); });
+  svg.addEventListener('pointermove', e => { if (down) scrub(e, svg); });
+  svg.addEventListener('pointerup', () => { down = false; update(true); });
+  svg.addEventListener('pointercancel', () => { down = false; });
+});
+
+['lat', 'lon', 'sqm', 'talt', 'taz', 'thr'].forEach(id => { try { const v = localStorage.getItem('fa_' + id); if (v !== null && v !== '') $(id).value = v; } catch (e) {} });
+setInputs(); update(true);
+</script>
+</body></html>
