@@ -163,6 +163,365 @@ body.modo-rojo #rojo{display:block}
 </div>
 <div id="rojo"></div>
 
+<script>
+/* Módulo Luna (independiente): si algo falla aquí, Cielo sigue igual. Modelo de brillo lunar de Krisciunas y Schaefer (1991). */
+/*
+ (c) 2011-2015, Vladimir Agafonkin
+ SunCalc is a JavaScript library for calculating sun/moon position and light phases.
+ https://github.com/mourner/suncalc
+*/
+
+(function () { 'use strict';
+
+// shortcuts for easier to read formulas
+
+var PI   = Math.PI,
+    sin  = Math.sin,
+    cos  = Math.cos,
+    tan  = Math.tan,
+    asin = Math.asin,
+    atan = Math.atan2,
+    acos = Math.acos,
+    rad  = PI / 180;
+
+// sun calculations are based on http://aa.quae.nl/en/reken/zonpositie.html formulas
+
+
+// date/time constants and conversions
+
+var dayMs = 1000 * 60 * 60 * 24,
+    J1970 = 2440588,
+    J2000 = 2451545;
+
+function toJulian(date) { return date.valueOf() / dayMs - 0.5 + J1970; }
+function fromJulian(j)  { return new Date((j + 0.5 - J1970) * dayMs); }
+function toDays(date)   { return toJulian(date) - J2000; }
+
+
+// general calculations for position
+
+var e = rad * 23.4397; // obliquity of the Earth
+
+function rightAscension(l, b) { return atan(sin(l) * cos(e) - tan(b) * sin(e), cos(l)); }
+function declination(l, b)    { return asin(sin(b) * cos(e) + cos(b) * sin(e) * sin(l)); }
+
+function azimuth(H, phi, dec)  { return atan(sin(H), cos(H) * sin(phi) - tan(dec) * cos(phi)); }
+function altitude(H, phi, dec) { return asin(sin(phi) * sin(dec) + cos(phi) * cos(dec) * cos(H)); }
+
+function siderealTime(d, lw) { return rad * (280.16 + 360.9856235 * d) - lw; }
+
+function astroRefraction(h) {
+    if (h < 0) // the following formula works for positive altitudes only.
+        h = 0; // if h = -0.08901179 a div/0 would occur.
+
+    // formula 16.4 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
+    // 1.02 / tan(h + 10.26 / (h + 5.10)) h in degrees, result in arc minutes -> converted to rad:
+    return 0.0002967 / Math.tan(h + 0.00312536 / (h + 0.08901179));
+}
+
+// general sun calculations
+
+function solarMeanAnomaly(d) { return rad * (357.5291 + 0.98560028 * d); }
+
+function eclipticLongitude(M) {
+
+    var C = rad * (1.9148 * sin(M) + 0.02 * sin(2 * M) + 0.0003 * sin(3 * M)), // equation of center
+        P = rad * 102.9372; // perihelion of the Earth
+
+    return M + C + P + PI;
+}
+
+function sunCoords(d) {
+
+    var M = solarMeanAnomaly(d),
+        L = eclipticLongitude(M);
+
+    return {
+        dec: declination(L, 0),
+        ra: rightAscension(L, 0)
+    };
+}
+
+
+var SunCalc = {};
+
+
+// calculates sun position for a given date and latitude/longitude
+
+SunCalc.getPosition = function (date, lat, lng) {
+
+    var lw  = rad * -lng,
+        phi = rad * lat,
+        d   = toDays(date),
+
+        c  = sunCoords(d),
+        H  = siderealTime(d, lw) - c.ra;
+
+    return {
+        azimuth: azimuth(H, phi, c.dec),
+        altitude: altitude(H, phi, c.dec)
+    };
+};
+
+
+// sun times configuration (angle, morning name, evening name)
+
+var times = SunCalc.times = [
+    [-0.833, 'sunrise',       'sunset'      ],
+    [  -0.3, 'sunriseEnd',    'sunsetStart' ],
+    [    -6, 'dawn',          'dusk'        ],
+    [   -12, 'nauticalDawn',  'nauticalDusk'],
+    [   -18, 'nightEnd',      'night'       ],
+    [     6, 'goldenHourEnd', 'goldenHour'  ]
+];
+
+// adds a custom time to the times config
+
+SunCalc.addTime = function (angle, riseName, setName) {
+    times.push([angle, riseName, setName]);
+};
+
+
+// calculations for sun times
+
+var J0 = 0.0009;
+
+function julianCycle(d, lw) { return Math.round(d - J0 - lw / (2 * PI)); }
+
+function approxTransit(Ht, lw, n) { return J0 + (Ht + lw) / (2 * PI) + n; }
+function solarTransitJ(ds, M, L)  { return J2000 + ds + 0.0053 * sin(M) - 0.0069 * sin(2 * L); }
+
+function hourAngle(h, phi, d) { return acos((sin(h) - sin(phi) * sin(d)) / (cos(phi) * cos(d))); }
+function observerAngle(height) { return -2.076 * Math.sqrt(height) / 60; }
+
+// returns set time for the given sun altitude
+function getSetJ(h, lw, phi, dec, n, M, L) {
+
+    var w = hourAngle(h, phi, dec),
+        a = approxTransit(w, lw, n);
+    return solarTransitJ(a, M, L);
+}
+
+
+// calculates sun times for a given date, latitude/longitude, and, optionally,
+// the observer height (in meters) relative to the horizon
+
+SunCalc.getTimes = function (date, lat, lng, height) {
+
+    height = height || 0;
+
+    var lw = rad * -lng,
+        phi = rad * lat,
+
+        dh = observerAngle(height),
+
+        d = toDays(date),
+        n = julianCycle(d, lw),
+        ds = approxTransit(0, lw, n),
+
+        M = solarMeanAnomaly(ds),
+        L = eclipticLongitude(M),
+        dec = declination(L, 0),
+
+        Jnoon = solarTransitJ(ds, M, L),
+
+        i, len, time, h0, Jset, Jrise;
+
+
+    var result = {
+        solarNoon: fromJulian(Jnoon),
+        nadir: fromJulian(Jnoon - 0.5)
+    };
+
+    for (i = 0, len = times.length; i < len; i += 1) {
+        time = times[i];
+        h0 = (time[0] + dh) * rad;
+
+        Jset = getSetJ(h0, lw, phi, dec, n, M, L);
+        Jrise = Jnoon - (Jset - Jnoon);
+
+        result[time[1]] = fromJulian(Jrise);
+        result[time[2]] = fromJulian(Jset);
+    }
+
+    return result;
+};
+
+
+// moon calculations, based on http://aa.quae.nl/en/reken/hemelpositie.html formulas
+
+function moonCoords(d) { // geocentric ecliptic coordinates of the moon
+
+    var L = rad * (218.316 + 13.176396 * d), // ecliptic longitude
+        M = rad * (134.963 + 13.064993 * d), // mean anomaly
+        F = rad * (93.272 + 13.229350 * d),  // mean distance
+
+        l  = L + rad * 6.289 * sin(M), // longitude
+        b  = rad * 5.128 * sin(F),     // latitude
+        dt = 385001 - 20905 * cos(M);  // distance to the moon in km
+
+    return {
+        ra: rightAscension(l, b),
+        dec: declination(l, b),
+        dist: dt
+    };
+}
+
+SunCalc.getMoonPosition = function (date, lat, lng) {
+
+    var lw  = rad * -lng,
+        phi = rad * lat,
+        d   = toDays(date),
+
+        c = moonCoords(d),
+        H = siderealTime(d, lw) - c.ra,
+        h = altitude(H, phi, c.dec),
+        // formula 14.1 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
+        pa = atan(sin(H), tan(phi) * cos(c.dec) - sin(c.dec) * cos(H));
+
+    h = h + astroRefraction(h); // altitude correction for refraction
+
+    return {
+        azimuth: azimuth(H, phi, c.dec),
+        altitude: h,
+        distance: c.dist,
+        parallacticAngle: pa
+    };
+};
+
+
+// calculations for illumination parameters of the moon,
+// based on http://idlastro.gsfc.nasa.gov/ftp/pro/astro/mphase.pro formulas and
+// Chapter 48 of "Astronomical Algorithms" 2nd edition by Jean Meeus (Willmann-Bell, Richmond) 1998.
+
+SunCalc.getMoonIllumination = function (date) {
+
+    var d = toDays(date || new Date()),
+        s = sunCoords(d),
+        m = moonCoords(d),
+
+        sdist = 149598000, // distance from Earth to Sun in km
+
+        phi = acos(sin(s.dec) * sin(m.dec) + cos(s.dec) * cos(m.dec) * cos(s.ra - m.ra)),
+        inc = atan(sdist * sin(phi), m.dist - sdist * cos(phi)),
+        angle = atan(cos(s.dec) * sin(s.ra - m.ra), sin(s.dec) * cos(m.dec) -
+                cos(s.dec) * sin(m.dec) * cos(s.ra - m.ra));
+
+    return {
+        fraction: (1 + cos(inc)) / 2,
+        phase: 0.5 + 0.5 * inc * (angle < 0 ? -1 : 1) / Math.PI,
+        angle: angle
+    };
+};
+
+
+function hoursLater(date, h) {
+    return new Date(date.valueOf() + h * dayMs / 24);
+}
+
+// calculations for moon rise/set times are based on http://www.stargazing.net/kepler/moonrise.html article
+
+SunCalc.getMoonTimes = function (date, lat, lng, inUTC) {
+    var t = new Date(date);
+    if (inUTC) t.setUTCHours(0, 0, 0, 0);
+    else t.setHours(0, 0, 0, 0);
+
+    var hc = 0.133 * rad,
+        h0 = SunCalc.getMoonPosition(t, lat, lng).altitude - hc,
+        h1, h2, rise, set, a, b, xe, ye, d, roots, x1, x2, dx;
+
+    // go in 2-hour chunks, each time seeing if a 3-point quadratic curve crosses zero (which means rise or set)
+    for (var i = 1; i <= 24; i += 2) {
+        h1 = SunCalc.getMoonPosition(hoursLater(t, i), lat, lng).altitude - hc;
+        h2 = SunCalc.getMoonPosition(hoursLater(t, i + 1), lat, lng).altitude - hc;
+
+        a = (h0 + h2) / 2 - h1;
+        b = (h2 - h0) / 2;
+        xe = -b / (2 * a);
+        ye = (a * xe + b) * xe + h1;
+        d = b * b - 4 * a * h1;
+        roots = 0;
+
+        if (d >= 0) {
+            dx = Math.sqrt(d) / (Math.abs(a) * 2);
+            x1 = xe - dx;
+            x2 = xe + dx;
+            if (Math.abs(x1) <= 1) roots++;
+            if (Math.abs(x2) <= 1) roots++;
+            if (x1 < -1) x1 = x2;
+        }
+
+        if (roots === 1) {
+            if (h0 < 0) rise = i + x1;
+            else set = i + x1;
+
+        } else if (roots === 2) {
+            rise = i + (ye < 0 ? x2 : x1);
+            set = i + (ye < 0 ? x1 : x2);
+        }
+
+        if (rise && set) break;
+
+        h0 = h2;
+    }
+
+    var result = {};
+
+    if (rise) result.rise = hoursLater(t, rise);
+    if (set) result.set = hoursLater(t, set);
+
+    if (!rise && !set) result[ye > 0 ? 'alwaysUp' : 'alwaysDown'] = true;
+
+    return result;
+};
+
+
+// export as Node module / AMD module / browser variable
+if (typeof exports === 'object' && typeof module !== 'undefined') module.exports = SunCalc;
+else if (typeof define === 'function' && define.amd) define(SunCalc);
+else window.SunCalc = SunCalc;
+
+}());
+
+(function () {
+  try {
+    if (typeof SunCalc === "undefined") return;
+    const R = Math.PI / 180, K = 0.172, SQM = 21.3;
+    const aire = z => { const s = Math.sin(Math.min(Math.max(z, 0), 89) * R); return Math.pow(1 - 0.96 * s * s, -0.5); };
+    const nl = m => 34.08 * Math.exp(20.7233 - 0.92104 * m);
+    const sep = (a1, z1, a2, z2) => { a1 *= R; a2 *= R; const c = Math.sin(a1)*Math.sin(a2) + Math.cos(a1)*Math.cos(a2)*Math.cos((z1 - z2) * R); return Math.acos(Math.max(-1, Math.min(1, c))) / R; };
+    function en(t, lat, lon) {
+      const d = new Date(t), hS = SunCalc.getPosition(d, lat, lon).altitude / R;
+      const mp = SunCalc.getMoonPosition(d, lat, lon), hL = mp.altitude / R, azL = (mp.azimuth / R + 180) % 360;
+      const fr = SunCalc.getMoonIllumination(d).fraction, al = Math.acos(Math.max(-1, Math.min(1, 2 * fr - 1))) / R;
+      const rho = sep(hL, azL, 90, 0), bO = nl(SQM);
+      let bL = 0;
+      if (hL > -1) {
+        const I = Math.pow(10, -0.4 * (3.84 + 0.026 * al + 4e-9 * Math.pow(al, 4)));
+        const F = Math.pow(10, 5.36) * (1.06 + Math.pow(Math.cos(rho * R), 2)) + Math.pow(10, 6.15 - rho / 40);
+        bL = F * I * Math.pow(10, -0.4 * K * aire(90 - Math.max(hL, 0))) * (1 - Math.pow(10, -0.4 * K * aire(0)));
+      }
+      const fL = bO / (bO + bL), fS = Math.pow(Math.min(1, Math.max(0, (-hS - 6) / 12)), 2);
+      return { hS, hL, ill: fr * 100, fL, fS, f: fL * fS, dmag: 2.5 * Math.log10((bO + bL) / bO) };
+    }
+    const memo = {};
+    function ventana(t, lat, lon, umbral) {            // mejor tramo seguido con factor >= umbral en las próximas 24 h
+      const k = lat.toFixed(2) + lon.toFixed(2) + Math.floor(t / 600000);
+      if (memo[k]) return memo[k];
+      let mejor = null, ini = -1; const N = 48, paso = 1800000, s = [];
+      for (let i = 0; i < N; i++) s.push(en(t + i * paso, lat, lon).f);
+      for (let i = 0; i <= N; i++) {
+        const ok = i < N && s[i] >= umbral;
+        if (ok && ini < 0) ini = i;
+        if (!ok && ini >= 0) { if (!mejor || i - ini > mejor[1] - mejor[0]) mejor = [ini, i]; ini = -1; }
+      }
+      const r = mejor ? { desde: t + mejor[0] * paso, hasta: t + mejor[1] * paso, horas: (mejor[1] - mejor[0]) / 2, ahora: mejor[0] === 0 } : null;
+      memo[k] = r; return r;
+    }
+    window.CieloLuna = { en, ventana };
+  } catch (e) { /* sin módulo Luna */ }
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 "use strict";
@@ -668,6 +1027,7 @@ function analizarSitio() {
       ${tipos.length ? `<dt>Tipo</dt><dd>${tipos.join(", ")}</dd>` : ""}
       <dt>Sol</dt><dd>${sol.toFixed(0)}° ${noche ? "(noche)" : sol < 0 ? "(crepúsculo)" : "(día)"}</dd>
     </dl>
+    ${bloqueLuna(S, a)}
     ${bloquePronostico(pr, estado.radio)}
     <h3>Nubosidad en las últimas horas</h3>
     ${serieSVG(tr.pts, estado.idx)}
@@ -678,6 +1038,30 @@ function analizarSitio() {
   dibujarDisco($("#disco"), g, S.lat, S.lon, estado.radio);
   dibujarPronostico(pr, S.lat, S.lon);
   conectarAcciones();
+}
+function bloqueLuna(S, a) {
+  try {
+    const L = window.CieloLuna; if (!L) return "";
+    const ahora = Date.now(), r = L.en(ahora, S.lat, S.lon), w = L.ventana(ahora, S.lat, S.lon, .6);
+    const claro = 1 - a.frac, comb = claro * r.f;
+    const nivel = comb >= .6 ? "bien" : comb >= .3 ? "" : "info";
+    let txt;
+    if (r.fS === 0) txt = "Aún es de día o crepúsculo: el factor sube cuando el Sol baje de −6°.";
+    else if (comb >= .85) txt = "Cielo despejado y sin Luna: buena noche para banda ancha.";
+    else if (comb >= .6) txt = "Buena para astrofoto: despejado y poca Luna.";
+    else if (r.f < .6 && claro >= .8) txt = "Despejado, pero la Luna aclara el cielo " + r.dmag.toFixed(1).replace(".", ",") + " mag: mejor banda estrecha u objetos brillantes.";
+    else if (r.f >= .6) txt = "La Luna no molesta, pero hay nubes en el radio.";
+    else txt = "Nubes y Luna en contra.";
+    const v = w ? (w.ahora ? "Buena hasta las " + horaLocal(new Date(w.hasta)) : "De " + horaLocal(new Date(w.desde)) + " a " + horaLocal(new Date(w.hasta)) + " (" + w.horas.toFixed(1).replace(".", ",") + " h)") : "Ninguna en las próximas 24 h";
+    return `<h3>Luna y astrofoto</h3>
+    <div class="alerta ${nivel}">${txt}</div>
+    <dl class="datos num" style="margin-top:0">
+      <dt>Luna</dt><dd>${r.hL.toFixed(0)}° sobre el horizonte, ${Math.round(r.ill)} % iluminada</dd>
+      <dt>Factor de cielo</dt><dd>${r.f.toFixed(2).replace(".", ",")} (con nubes: ${comb.toFixed(2).replace(".", ",")})</dd>
+      <dt>Ventana buena</dt><dd>${v}</dd>
+    </dl>
+    <p class="nota"><a href="luna.html" style="color:var(--foco)">Ver la noche completa y las próximas 14 noches</a></p>`;
+  } catch (e) { return ""; }
 }
 const fmtMin = m => m < 90 ? `${m} min` : `${(m/60).toFixed(1).replace(".", ",")} h`;
 const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
