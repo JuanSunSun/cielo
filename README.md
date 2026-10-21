@@ -76,3 +76,16 @@ La app marca «Orientativo» cuando no se da esa condición.
 
 Pendiente para mejorar: seguir el movimiento con el infrarrojo (BT 11 µm) en vez de la máscara binaria,
 acumular semanas de verificación para calibrar probabilidades y mezclar con modelos numéricos más allá de 2 h.
+
+## Registro de datos y corrección estadística
+
+- `registro.py` (lo lanza `.github/workflows/registro.yml` al terminar cada ejecución del mapa) guarda, como mucho una vez por hora
+  y para 456 puntos fijos (malla de 1°), lo que sabía el pronóstico por advección y, pasadas 1, 2 y 3 h, lo que ocurrió.
+  Va a la rama `datos` (un solo commit; unos 100 KB al día; **tope de 40 MB** con borrado de lo más antiguo).
+- `entrenar.py` (una vez al día, ~09 UTC) ajusta una regresión logística por horizonte y la compara en días no vistos
+  con climatología, persistencia y advección (estas dos recalibradas). Solo publica `modelo.json` si hay ≥ 5 días y ≥ 20 000
+  muestras y mejora el Brier de la advección en un 3 % o más. El informe queda en `datos/informe.txt`.
+- La app aún **no** usa `modelo.json`: cuando exista y se haya comprobado que mejora, se conectará.
+- Histórico del mapa: tope duro de 8 MB; el navegador baja primero el último cuadro y el resto en segundo plano
+  (solo 3 con «ahorro de datos»).
+- Pruebas: `python tests/test_registro.py DIR`, `python tests/test_entrenar.py`.

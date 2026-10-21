@@ -266,10 +266,16 @@ async function cargarMeta() {
       const enUltimo = estado.idx === -1 || estado.idx >= ultimo - 1;
       const sl = $("#deslizador"); sl.max = ultimo;
       if (enUltimo) irA(ultimo);
-      await Promise.all(estado.cuadros.map(c => bajarRejilla(c).catch(() => null)));
-      podarCache();
       if (estado.sitio) analizarSitio();
       if (estado.capaCampo && mapa.hasLayer(estado.capaCampo)) dibujarCampoMovimiento();
+      // el resto del histórico se baja en segundo plano, de más reciente a más antiguo; con «ahorro de datos» solo los 3 siguientes
+      const resto = estado.cuadros.slice(0, -1).reverse().slice(0, ahorroDeDatos() ? 3 : Infinity);
+      const cargarResto = async () => {
+        for (const c of resto) { try { await bajarRejilla(c); } catch {} }
+        podarCache();
+        if (estado.sitio) analizarSitio();
+      };
+      (window.requestIdleCallback || (f => setTimeout(f, 300)))(cargarResto);
     }
     pintarEdad();
   } catch (e) {
@@ -277,6 +283,7 @@ async function cargarMeta() {
     $("#edad").classList.add("aviso");
   }
 }
+const ahorroDeDatos = () => !!(navigator.connection && navigator.connection.saveData);
 function podarCache() {
   const vivos = new Set(estado.cuadros.map(c => c.f));
   for (const k of estado.cache.keys()) if (!vivos.has(k)) estado.cache.delete(k);
@@ -293,15 +300,18 @@ function pintarEdad() {
 }
 
 function irA(i) {
-  estado.idx = Math.max(0, Math.min(i, estado.cuadros.length - 1));
+  i = estado.idx = Math.max(0, Math.min(i, estado.cuadros.length - 1));
   $("#deslizador").value = estado.idx;
   const c = estado.cuadros[estado.idx];
   $("#hora").textContent = c ? horaLocal(fechaCuadro(c)) + (estado.idx === estado.cuadros.length - 1 ? " (última)" : "") : "—";
   estado.capa.redraw();
   if (estado.sitio) analizarSitio(false);
+  // un cuadro antiguo puede no haberse bajado aún (carga diferida o ahorro de datos)
+  if (c && !estado.cache.has(c.f)) bajarRejilla(c).then(() => { if (estado.idx === i) { estado.capa.redraw(); if (estado.sitio) analizarSitio(false); } }).catch(() => {});
 }
 $("#deslizador").addEventListener("input", e => irA(+e.target.value));
-$("#btn-play").addEventListener("click", () => {
+$("#btn-play").addEventListener("click", async () => {
+  if (!estado.play) await Promise.all(estado.cuadros.map(c => bajarRejilla(c).catch(() => null)));
   if (estado.play) { clearInterval(estado.play); estado.play = null; $("#btn-play").textContent = "▶"; return; }
   $("#btn-play").textContent = "❚❚";
   let i = 0; irA(0);

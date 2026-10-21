@@ -1,0 +1,56 @@
+name: Registro y entrenamiento
+# Cada vez que termina «Mapa de nubes» (cada ~15 min) registra, como mucho una vez por hora, los pronósticos
+# y lo que ocurrió, en la rama `datos` (con tope de tamaño). A las ~09 UTC entrena la corrección una vez al día.
+# No toca el flujo que publica el mapa.
+on:
+  workflow_run:
+    workflows: ["Mapa de nubes"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      entrenar:
+        description: "Entrenar ahora aunque no sea la hora"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: registro
+  cancel-in-progress: false
+jobs:
+  registrar:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip, cache-dependency-path: requirements-ml.txt}
+      - run: pip install -r requirements-ml.txt
+      - name: Traer la rama datos (si existe)
+        run: |
+          git clone --depth 1 -b datos "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ../datos 2>/dev/null || mkdir -p ../datos
+          ls -la ../datos | head
+      - name: Registrar
+        run: python registro.py --sitio "https://juansunsun.github.io/cielo" --datos ../datos
+      - name: Entrenar (una vez al día)
+        run: |
+          HOY=$(date -u +%F); HORA=$(date -u +%H)
+          ULT=$(python -c "import json,os; p='../datos/estado.json'; print(json.load(open(p)).get('entrenado','') if os.path.exists(p) else '')")
+          if [ "${{ inputs.entrenar }}" = "true" ] || { [ "$HORA" = "09" ] && [ "$ULT" != "$HOY" ]; }; then
+            python entrenar.py --registro ../datos/registro --salida ../datos
+            python -c "import json; p='../datos/estado.json'; e=json.load(open(p)); e['entrenado']='$HOY'; json.dump(e, open(p,'w'))"
+          else
+            echo "Hoy no toca entrenar (hora $HORA UTC, último entrenamiento: ${ULT:-nunca})"
+          fi
+      - name: Publicar en la rama datos
+        run: |
+          cd ../datos
+          rm -rf .git
+          git init -q -b datos
+          git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
+          printf 'Registro de pronósticos y resultados de Cielo. Lo genera .github/workflows/registro.yml; no editar a mano.\n' > LEEME.txt
+          git add -A
+          git commit -qm "registro $(date -u +%FT%TZ)"
+          du -sh .
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" datos

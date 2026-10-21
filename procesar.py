@@ -51,6 +51,7 @@ R_TIERRA_KM = 6371.0
 REGION = dict(lat_max=-17.5, lat_min=-56.0, lon_min=-76.0, lon_max=-64.0, paso=0.02)
 HISTORICO_HORAS = 4.0
 MAX_CUADROS = 20
+MAX_BYTES_HISTORICO = 8 * 1024 * 1024   # tope duro del histórico publicado (se descartan los cuadros más antiguos)
 
 UMBRAL_NIEBLA_BTD = 2.5     # K
 BT11_MIN_NIEBLA = 253.0     # K, evita superficies muy frías (nieve, hielo)
@@ -413,6 +414,10 @@ def main(argv=None):
     # poda del histórico
     limite = (ahora - timedelta(hours=HISTORICO_HORAS)).strftime("%Y-%m-%dT%H:%MZ")
     orden = sorted((c for c in cuadros.values() if c["t"] >= limite), key=lambda c: c["t"])[-MAX_CUADROS:]
+    tam_f = lambda c: os.path.getsize(os.path.join(dir_data, c["f"])) if os.path.exists(os.path.join(dir_data, c["f"])) else 0
+    while len(orden) > 4 and sum(tam_f(c) for c in orden) > MAX_BYTES_HISTORICO:
+        log(f"  histórico por encima de {MAX_BYTES_HISTORICO // 2**20} MB: se descarta {orden[0]['t']}")
+        orden.pop(0)
     vivos = {os.path.basename(c["f"]) for c in orden}
     for n in os.listdir(dir_f):
         if n not in vivos:
