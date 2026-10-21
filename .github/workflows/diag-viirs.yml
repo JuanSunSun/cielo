@@ -21,14 +21,15 @@ jobs:
           cand = []
           for p in cm:
               n = p.split("/")[-1]; s = n.split("_s")[1][:15]
-              if "0530" <= s[8:12] <= "0730": cand.append((p, s))
-          P("fragmentos de CloudMask entre 05:30 y 07:30 UTC:", len(cand))
+              if "0550" <= s[8:12] <= "0700": cand.append((p, s))
+          P("fragmentos de CloudMask entre 05:50 y 07:00 UTC:", len(cand))
           hallado = None
           for p, s in cand:
               with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
                   if hallado is None and "Latitude" in h:
                       la = h["Latitude"][::40, ::160]; lo = h["Longitude"][::40, ::160]
-                      if np.nanmin(la) <= LAT <= np.nanmax(la) and np.nanmin(lo) <= LON <= np.nanmax(lo):
+                      ok = (la > -90) & (la < 90) & (lo > -180) & (lo < 180)
+                      if ok.any() and np.abs(la[ok] - LAT).min() < 2 and np.abs(lo[ok] - LON).min() < 2.5:
                           hallado = (p, s)
                           break
           if not hallado:
