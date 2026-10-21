@@ -1,58 +1,35 @@
-name: Diagnóstico VIIRS
-# Averigua a qué horas pasan NOAA-20, NOAA-21 y Suomi NPP sobre Puerto Varas (sin cuenta). Se lanza a mano.
+name: Diagnóstico Open-Meteo
+# Compara los modelos que sirve Open-Meteo para Puerto Varas (nubosidad y malla). Se lanza a mano.
 on: workflow_dispatch
 permissions:
   contents: write
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - run: pip install s3fs h5py numpy
       - run: |
-          cat > v.py <<'PY'
-          import s3fs, h5py, numpy as np
-          from concurrent.futures import ThreadPoolExecutor
-          fs = s3fs.S3FileSystem(anon=True)
-          D = "2026/10/20"; LAT, LON = -41.319, -72.985
-          out = []
-          def P(*a): out.append(" ".join(str(x) for x in a)); print(out[-1], flush=True)
-          def cubre(p):
-              try:
-                  with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
-                      la = h["Latitude"][::40, ::160]; lo = h["Longitude"][::40, ::160]
-                  ok = (la > -90) & (la < 90) & (lo > -180) & (lo < 180)
-                  if not ok.any(): return None
-                  d = np.hypot(la[ok] - LAT, (lo[ok] - LON) * np.cos(np.radians(LAT)))
-                  return float(d.min() * 111.2)
-              except Exception as e:
-                  return None
-          for sat, B in (("NOAA-20", "noaa-nesdis-n20-pds"), ("NOAA-21", "noaa-nesdis-n21-pds"), ("Suomi NPP", "noaa-nesdis-snpp-pds")):
-              P("==", sat)
-              try:
-                  prods = [x.split("/")[-1] for x in fs.ls(B) if "CloudMask" in x]
-                  P("  productos de máscara:", prods)
-                  pr = prods[0]
-                  lista = sorted(fs.ls(f"{B}/{pr}/{D}"))
-              except Exception as e:
-                  P("  ERROR", type(e).__name__, str(e)[:150]); continue
-              sel = []
-              for p in lista[::2]:
-                  hhmm = p.split("_s")[1][8:12]
-                  if "0330" <= hhmm <= "0730" or "1530" <= hhmm <= "1930": sel.append(p)
-              with ThreadPoolExecutor(8) as ex: res = list(ex.map(cubre, sel))
-              hits = [(p.split("_s")[1][8:12], round(d)) for p, d in zip(sel, res) if d is not None and d < 250]
-              P("  fragmentos con el sitio a < 250 km del borde de muestra:", len(hits))
-              for h in hits: P("   ", h[0], "UTC  distancia mínima ≈", h[1], "km")
-              if lista: P("  tamaño de un fragmento de máscara:", fs.size(lista[0]) // 1024, "KB")
-          open("viirs3.txt", "w").write("\n".join(out))
-          PY
-          python v.py
+          mkdir -p diag; : > diag/openmeteo.txt
+          Q="latitude=-41.319&longitude=-72.985&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_hours=12&timezone=America%2FSantiago"
+          for m in default ecmwf_ifs ecmwf_ifs025 ecmwf_aifs025_single gfs_seamless icon_seamless; do
+            if [ "$m" = default ]; then U="https://api.open-meteo.com/v1/forecast?$Q"; else U="https://api.open-meteo.com/v1/forecast?$Q&models=$m"; fi
+            echo "== $m" >> diag/openmeteo.txt
+            curl -sS "$U" | python3 -c "
+          import sys, json
+          j = json.load(sys.stdin)
+          if 'hourly' not in j: print('ERROR', j); sys.exit()
+          print('celda:', j['latitude'], j['longitude'], 'elev', j.get('elevation'))
+          h = j['hourly']
+          ks = [k for k in h if k.startswith('cloud_cover')]
+          for k in ks: print(f'{k:24s}', h[k])
+          print('tiempos', h['time'][0], '...', h['time'][-1])
+          " >> diag/openmeteo.txt
+          done
+          cat diag/openmeteo.txt
       - run: |
           git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
           git checkout --orphan diag-out
           git rm -rfq --cached .
-          git add -f viirs3.txt
-          git commit -qm "viirs3"
+          git add -f diag/openmeteo.txt
+          git commit -qm "openmeteo"
           git push -f origin diag-out
