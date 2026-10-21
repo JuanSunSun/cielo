@@ -21,8 +21,8 @@ jobs:
           cand = []
           for p in cm:
               n = p.split("/")[-1]; s = n.split("_s")[1][:15]
-              if "0550" <= s[8:12] <= "0700": cand.append((p, s))
-          P("fragmentos de CloudMask entre 05:50 y 07:00 UTC:", len(cand))
+              if "0430" <= s[8:12] <= "0550" or "1640" <= s[8:12] <= "1830": cand.append((p, s))
+          P("fragmentos de CloudMask en las ventanas 04:30-05:50 y 16:40-18:30 UTC:", len(cand))
           hallado = None
           for p, s in cand:
               with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
@@ -30,8 +30,8 @@ jobs:
                       la = h["Latitude"][::40, ::160]; lo = h["Longitude"][::40, ::160]
                       ok = (la > -90) & (la < 90) & (lo > -180) & (lo < 180)
                       if ok.any() and np.abs(la[ok] - LAT).min() < 2 and np.abs(lo[ok] - LON).min() < 2.5:
-                          hallado = (p, s)
-                          break
+                          P("  cubre el sitio:", s[8:12], "UTC")
+                          if hallado is None: hallado = (p, s)
           if not hallado:
               P("ningún fragmento cubre el sitio en esa ventana"); 
           else:
