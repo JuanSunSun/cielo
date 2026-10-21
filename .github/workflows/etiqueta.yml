@@ -1,0 +1,21 @@
+name: Crear etiqueta de respaldo
+# Crea una etiqueta (copia nombrada y fija) sobre un commit. Se lanza a mano: nombre y commit (por defecto, el último de main).
+on:
+  workflow_dispatch:
+    inputs:
+      nombre: {description: "Nombre de la etiqueta", required: true, default: "v1-estable"}
+      commit: {description: "Commit (vacío = último de main)", required: false, default: ""}
+permissions:
+  contents: write
+jobs:
+  etiquetar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - run: |
+          git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
+          C="${{ inputs.commit }}"; [ -z "$C" ] && C=$(git rev-parse origin/main)
+          git tag -a "${{ inputs.nombre }}" "$C" -m "Respaldo ${{ inputs.nombre }}"
+          git push origin "${{ inputs.nombre }}"
+          echo "Etiqueta ${{ inputs.nombre }} -> $C"
