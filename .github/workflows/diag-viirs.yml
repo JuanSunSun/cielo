@@ -1,68 +1,58 @@
 name: Diagnóstico VIIRS
-# Baja un fragmento VIIRS de NOAA-20 sobre Puerto Varas y describe su formato (sin cuenta). Se lanza a mano.
+# Averigua a qué horas pasan NOAA-20, NOAA-21 y Suomi NPP sobre Puerto Varas (sin cuenta). Se lanza a mano.
 on: workflow_dispatch
 permissions:
   contents: write
 jobs:
   diag:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - run: pip install s3fs h5py numpy
       - run: |
           cat > v.py <<'PY'
           import s3fs, h5py, numpy as np
+          from concurrent.futures import ThreadPoolExecutor
           fs = s3fs.S3FileSystem(anon=True)
-          B, D = "noaa-nesdis-n20-pds", "2026/10/20"
-          LAT, LON = -41.319, -72.985
+          D = "2026/10/20"; LAT, LON = -41.319, -72.985
           out = []
           def P(*a): out.append(" ".join(str(x) for x in a)); print(out[-1], flush=True)
-          cm = [p for p in fs.ls(f"{B}/VIIRS-JRR-CloudMask/{D}")]
-          cand = []
-          for p in cm:
-              n = p.split("/")[-1]; s = n.split("_s")[1][:15]
-              if "0430" <= s[8:12] <= "0550" or "1640" <= s[8:12] <= "1830": cand.append((p, s))
-          P("fragmentos de CloudMask en las ventanas 04:30-05:50 y 16:40-18:30 UTC:", len(cand))
-          hallado = None
-          for p, s in cand:
-              with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
-                  if hallado is None and "Latitude" in h:
+          def cubre(p):
+              try:
+                  with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
                       la = h["Latitude"][::40, ::160]; lo = h["Longitude"][::40, ::160]
-                      ok = (la > -90) & (la < 90) & (lo > -180) & (lo < 180)
-                      if ok.any() and np.abs(la[ok] - LAT).min() < 2 and np.abs(lo[ok] - LON).min() < 2.5:
-                          P("  cubre el sitio:", s[8:12], "UTC")
-                          if hallado is None: hallado = (p, s)
-          if not hallado:
-              P("ningún fragmento cubre el sitio en esa ventana"); 
-          else:
-              p, s = hallado; P("fragmento:", p, "tamaño", fs.size(p) // 1024, "KB")
-              with fs.open(p, "rb") as f, h5py.File(f, "r") as h:
-                  P("variables:")
-                  for k in h.keys():
-                      d = h[k]
-                      if hasattr(d, "shape"): P("  ", k, d.shape, d.dtype)
-                  la, lo = h["Latitude"][:], h["Longitude"][:]
-                  d2 = (la - LAT) ** 2 + ((lo - LON) * np.cos(np.radians(LAT))) ** 2
-                  i, j = np.unravel_index(np.nanargmin(d2), d2.shape)
-                  P("píxel más cercano", (i, j), "dist ≈", round(float(np.sqrt(d2[i, j]) * 111.2), 2), "km", "lat/lon", la[i, j], lo[i, j])
-                  for k in ("CloudMask", "CloudProbability", "QCFlags"):
-                      if k in h:
-                          d = h[k]; P(k, "atributos:", {a: (d.attrs[a].tolist() if hasattr(d.attrs[a], "tolist") else d.attrs[a]) for a in d.attrs if a in ("flag_values", "flag_meanings", "long_name", "units", "_FillValue")})
-                          P(k, "entorno 7x7 del sitio:\n", h[k][max(i - 3, 0):i + 4, max(j - 3, 0):j + 4])
-              t = s[8:15]
-              for prod, pref in (("VIIRS-I5-SDR", "SVI05"), ("VIIRS-I4-SDR", "SVI04"), ("VIIRS-IMG-GEO-TC", "GITCO"), ("VIIRS-NCC-EDR", "")):
-                  try:
-                      m = [q for q in fs.ls(f"{B}/{prod}/{D}") if f"_t{t}_" in q or f"_s{s}" in q]
-                      P(prod, [ (q.split('/')[-1], fs.size(q) // 1024) for q in m ], "(KB)")
-                  except Exception as e:
-                      P(prod, "ERROR", type(e).__name__)
-          open("viirs2.txt", "w").write("\n".join(out))
+                  ok = (la > -90) & (la < 90) & (lo > -180) & (lo < 180)
+                  if not ok.any(): return None
+                  d = np.hypot(la[ok] - LAT, (lo[ok] - LON) * np.cos(np.radians(LAT)))
+                  return float(d.min() * 111.2)
+              except Exception as e:
+                  return None
+          for sat, B in (("NOAA-20", "noaa-nesdis-n20-pds"), ("NOAA-21", "noaa-nesdis-n21-pds"), ("Suomi NPP", "noaa-nesdis-snpp-pds")):
+              P("==", sat)
+              try:
+                  prods = [x.split("/")[-1] for x in fs.ls(B) if "CloudMask" in x]
+                  P("  productos de máscara:", prods)
+                  pr = prods[0]
+                  lista = sorted(fs.ls(f"{B}/{pr}/{D}"))
+              except Exception as e:
+                  P("  ERROR", type(e).__name__, str(e)[:150]); continue
+              sel = []
+              for p in lista[::2]:
+                  hhmm = p.split("_s")[1][8:12]
+                  if "0330" <= hhmm <= "0730" or "1530" <= hhmm <= "1930": sel.append(p)
+              with ThreadPoolExecutor(8) as ex: res = list(ex.map(cubre, sel))
+              hits = [(p.split("_s")[1][8:12], round(d)) for p, d in zip(sel, res) if d is not None and d < 250]
+              P("  fragmentos con el sitio a < 250 km del borde de muestra:", len(hits))
+              for h in hits: P("   ", h[0], "UTC  distancia mínima ≈", h[1], "km")
+              if lista: P("  tamaño de un fragmento de máscara:", fs.size(lista[0]) // 1024, "KB")
+          open("viirs3.txt", "w").write("\n".join(out))
           PY
           python v.py
       - run: |
           git config user.name "cielo-bot"; git config user.email "cielo-bot@users.noreply.github.com"
           git checkout --orphan diag-out
           git rm -rfq --cached .
-          git add -f viirs2.txt
-          git commit -qm "viirs2"
+          git add -f viirs3.txt
+          git commit -qm "viirs3"
           git push -f origin diag-out
