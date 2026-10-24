@@ -1,0 +1,7 @@
+Registro: 19 pasadas, 4 días (2026-10-21 a 2026-10-24)
+
++1 h: 6840 muestras con etiqueta y 4 días; hacen falta 20000 y 5. Sin entrenar.
+
++2 h: 7736 muestras con etiqueta y 4 días; hacen falta 20000 y 5. Sin entrenar.
+
++3 h: 7720 muestras con etiqueta y 4 días; hacen falta 20000 y 5. Sin entrenar.
