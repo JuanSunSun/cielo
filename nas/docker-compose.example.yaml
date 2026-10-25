@@ -1,0 +1,25 @@
+# Ejemplo para el NAS (Ugreen UGOS Pro). Copiar a /volume1/docker/cielo/docker-compose.yaml
+# junto a la carpeta src/ (este repo) y a data/. Reconstruir con una etiqueta nueva de imagen.
+services:
+  cielo:
+    build:
+      context: ./src
+      dockerfile: nas/Dockerfile
+    image: cielo:v2
+    container_name: cielo
+    restart: unless-stopped
+    ports:
+      - "8765:8080"          # http://IP-DEL-NAS:8765
+    volumes:
+      - /volume1/docker/cielo/data:/data
+      - /volume1/docker/estacion-meteo/exports:/estacion:ro   # opcional: estación local (ver README)
+      - /volume1/docker/cielo/src/app:/opt/cielo/app:ro                 # la web se edita sin reconstruir
+      - /volume1/docker/cielo/src/alertas.py:/opt/cielo/alertas.py:ro   # idem alertas y arranque
+      - /volume1/docker/cielo/src/nas/entrypoint.sh:/entrypoint.sh:ro
+      - /volume1/docker/cielo/src/nas/servidor.py:/opt/cielo/servidor.py:ro
+    env_file:
+      - path: /volume1/docker/cielo/alertas.env   # sitio y Telegram; opcional, fuera de git
+        required: false
+    environment:
+      TZ: America/Santiago
+      INTERVALO_SEG: "900"

@@ -89,3 +89,53 @@ acumular semanas de verificación para calibrar probabilidades y mezclar con mod
 - Histórico del mapa: tope duro de 8 MB; el navegador baja primero el último cuadro y el resto en segundo plano
   (solo 3 con «ahorro de datos»).
 - Pruebas: `python tests/test_registro.py DIR`, `python tests/test_entrenar.py`.
+
+## Despliegue en el NAS (Ugreen DXP4800 Plus, UGOS Pro)
+
+Alternativa a GitHub Pages: un solo contenedor (`nas/Dockerfile`) con un servidor Python
+(`nas/servidor.py`) y un bucle que ejecuta `procesar.py` cada 15 min (`nas/entrypoint.sh`).
+
+- Código en `/volume1/docker/cielo/src`, datos en `/volume1/docker/cielo/data`. Ejemplo de compose: `nas/docker-compose.example.yaml`.
+- Proyecto Docker `cielo`, ruta `docker/cielo`; su `docker-compose.yaml` usa `context: ./src`
+  e `image: cielo:v2` (cambiar la etiqueta fuerza a reconstruir la imagen).
+- Dentro de casa: `http://192.168.0.64:8765`.
+- Fuera de casa: Tailscale en Docker (`nas/tailscale/`), que publica el puerto 8765 con HTTPS
+  (`tailscale serve`). Requiere MagicDNS y HTTPS Certificates activos en la cuenta de Tailscale,
+  la app de Tailscale conectada en el iPhone y una auth key propia en `TS_AUTHKEY` (no se guarda en git).
+
+Notas aprendidas:
+- No usar nginx: el usuario del worker no puede leer `/data` (ACL de UGOS); el servidor Python
+  corre con el mismo usuario que escribe los datos.
+- `.dockerignore` no debe excluir `nas/`.
+- Tras cambiar el código, copiar `src` al NAS y reconstruir con una etiqueta nueva de imagen.
+
+## Alertas por Telegram
+
+`alertas.py` corre tras cada ciclo (cada 15 min) para un solo sitio y avisa cuando: se va a despejar
+(1–3 h), van a llegar nubes, hay niebla/estrato nocturno, riesgo de rocío o lluvia. Usa la misma advección con
+el viento a 850/700/300 hPa que el panel de la app. Cada tipo tiene enfriamiento (3–6 h) y por defecto
+solo avisa de noche (`SOLO_NOCHE=1`): el aviso se abre 2 h antes del atardecer (`ANTES_ATARDECER_H`)
+y mira hasta 6 h hacia delante, para organizar la tarde; el evento debe ocurrir con el sol a menos de −6°.
+La lluvia (☔, Open-Meteo: ≥0,3 mm/h con prob. ≥40 % o ≥0,2 mm/h con ≥70 %, hasta `LLUVIA_HORAS`=3 h) avisa a cualquier hora.
+
+- Configuración en `/volume1/docker/cielo/alertas.env` (plantilla: `alertas.env.example`; no va a git).
+- Sin esa configuración, las alertas quedan desactivadas y el resto funciona igual.
+- Pruebas: `python alertas.py --salida DIR --prueba` (muestra sin enviar), `--chat-id`, `--enviar-prueba`.
+- El sitio se cambia desde la app (tocar un punto > «Avisarme de este sitio»): `nas/servidor.py` expone
+  `GET/POST /api/alerta` y guarda `/data/alertas.json`; el cambio se aplica al momento y se avisa por Telegram.
+  En GitHub Pages ese botón no aparece (no hay API).
+- `alertas.py`, `nas/servidor.py` y `nas/entrypoint.sh` se montan desde el NAS: se editan sin reconstruir la imagen.
+
+### Estación meteorológica local (opcional)
+
+Si `/estacion/latest.json` existe (el receptor Ecowitt de `estacion-meteo` lo escribe cada ~60 s; se monta en solo
+lectura) y tiene menos de 10 min, `alertas.py` lo usa; si falta o es viejo, todo sigue igual con Open-Meteo.
+
+- **Rocío:** usa la temperatura y el punto de rocío medidos en vez de los del modelo (mismo umbral de 2 °C).
+- **Lluvia:** avisa de «está cayendo ahora» si la estación mide ≥ 0,1 mm/h.
+- **Niebla:** el aviso del satélite añade la lectura de la estación; `niebla_local` avisa cuando la estación marca
+  niebla y el satélite no la clasifica como tal (solo de noche, enfriamiento 6 h).
+- **Registro de pares:** cada ciclo añade una fila a `/data/comparacion_estacion.csv` (satélite en el radio del sitio
+  frente a lo medido), para recalibrar umbrales con datos propios.
+
+Estación en tejado, no estándar: valores válidos para tendencias y umbrales locales, no homologables.
