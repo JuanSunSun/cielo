@@ -1,0 +1,20 @@
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: tailscale
+    hostname: nas-cielo
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /volume1/docker/tailscale/state:/var/lib/tailscale
+      - /volume1/docker/tailscale/config:/config
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"   # clave propia, fuera de git (variable de entorno o .env)
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_HOSTNAME: nas-cielo
+      TS_USERSPACE: "false"
