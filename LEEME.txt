@@ -1,0 +1,1 @@
+Registro de pronósticos y resultados de Cielo. Lo genera .github/workflows/registro.yml; no editar a mano.
