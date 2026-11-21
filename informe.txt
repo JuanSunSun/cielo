@@ -1,0 +1,13 @@
+Registro: 112 pasadas, 30 días (2026-10-21 a 2026-11-19)
+
++1 h: 19603 muestras con etiqueta y 30 días; hacen falta 20000 y 5. Sin entrenar.
+
++2 h  (18668 entrenamiento / 6362 prueba, 15 días)
+   nublado   Brier: climatología 0.2315   persistencia 0.1441   advección 0.1382   logística 0.1341   boosting 0.1296   → mejora logística vs advección +3.0 %
+   despejado Brier: climatología 0.1883   persistencia 0.1233   advección 0.1190   logística 0.1125   boosting 0.1097   → mejora logística vs advección +5.4 %
+   nublado: mejora +3.0 % < 3 %, no se publica
+
++3 h  (21808 entrenamiento / 7252 prueba, 16 días)
+   nublado   Brier: climatología 0.2291   persistencia 0.1694   advección 0.1645   logística 0.1614   boosting 0.1552   → mejora logística vs advección +1.9 %
+   despejado Brier: climatología 0.1835   persistencia 0.1389   advección 0.1354   logística 0.1308   boosting 0.1278   → mejora logística vs advección +3.4 %
+   nublado: mejora +1.9 % < 3 %, no se publica
